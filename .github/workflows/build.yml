@@ -241,7 +241,7 @@ jobs:
            *  - 볼륨 +      : 누르는 동안 뒤로 감기 (곡 서랍에서는 위로 한 칸)
            *  - 볼륨 −      : 누르는 동안 앞으로 감기 (곡 서랍에서는 아래로 한 칸)
            *  - 좌우 쓸기   : 다음 곡 / 이전 곡 (카세트를 갈아끼우는 효과)
-           *  - 위로 쓸기   : 곡 서랍 열기, 고른 곡을 아래로 끌어 넣으면 재생
+           *  - 위로 쓸기   : 앨범 커버플로우 열기(옆으로 넘겨 고르고, 아래로 쓸어 카세트에 넣으면 재생)
            *  - 카세트 길게 : 알림 접근 설정 열기(곡 정보 / 감기 / 곡 목록에 필요)
            */
           class MainActivity : Activity() {
@@ -435,6 +435,7 @@ jobs:
 
           import android.content.ComponentName
           import android.content.Context
+          import android.graphics.Bitmap
           import android.media.AudioManager
           import android.media.MediaMetadata
           import android.media.session.MediaController
@@ -446,9 +447,11 @@ jobs:
           import android.os.Looper
           import android.os.SystemClock
           import android.provider.Settings
+          import android.util.Base64
           import android.view.KeyEvent
           import org.json.JSONArray
           import org.json.JSONObject
+          import java.io.ByteArrayOutputStream
 
           /**
            * 지금 폰에서 나오고 있는 음악(스포티파이, 유튜브 뮤직 등)을 조종하고,
@@ -481,6 +484,8 @@ jobs:
               private var lastFallbackAt = 0L
               private var stepped = false      // 실제로 위치를 옮긴 적이 있는지
               private var lastQueueJson = ""
+              private var artKeySent = ""                         // 앨범 커버를 이미 보낸 곡
+              private val artCache = HashMap<Long, String>()      // 대기열 곡별 커버(한 번만 만든다)
 
               private val callback = object : MediaController.Callback() {
                   override fun onPlaybackStateChanged(state: PlaybackState?) { push(); pushQueue() }
@@ -693,12 +698,20 @@ jobs:
                       o.put("playing", st?.state == PlaybackState.STATE_PLAYING)
                       o.put("pos", displayPos(st))
                       o.put("dur", md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L)
-                      o.put("title", md?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "")
-                      o.put(
-                          "artist",
-                          md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
-                              ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
-                      )
+                      val title = md?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: ""
+                      val artist = md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                          ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
+                      o.put("title", title)
+                      o.put("artist", artist)
+                      // 앨범 커버는 곡이 바뀐 뒤 처음 구했을 때 한 번만 보낸다
+                      val artKey = title + "\u0001" + artist
+                      if (artKey != artKeySent) {
+                          val art = artOf(md)
+                          if (art.isNotEmpty()) {
+                              o.put("art", art)
+                              artKeySent = artKey
+                          }
+                      }
                   }
                   onState(o.toString())
               }
@@ -717,6 +730,8 @@ jobs:
                           o.put("id", item.queueId.toString())
                           o.put("title", title)
                           o.put("artist", d.subtitle?.toString() ?: "")
+                          val a = queueArt(item)
+                          if (a.isNotEmpty()) o.put("art", a)
                           arr.put(o)
                       }
                   }
@@ -727,6 +742,39 @@ jobs:
                   if (json != lastQueueJson) {
                       lastQueueJson = json
                       onQueue(json)
+                  }
+              }
+
+              /** 지금 곡의 앨범 커버를 작은 JPEG(data URI)로 만든다. 없으면 빈 문자열 */
+              private fun artOf(md: MediaMetadata?): String {
+                  if (md == null) return ""
+                  val bmp = md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+                      ?: md.getBitmap(MediaMetadata.METADATA_KEY_ART)
+                      ?: md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+                      ?: return ""
+                  return encodeArt(bmp, 200)
+              }
+
+              private fun queueArt(item: MediaSession.QueueItem): String {
+                  artCache[item.queueId]?.let { return it }
+                  val bmp = item.description.iconBitmap
+                  val s = if (bmp != null) encodeArt(bmp, 160) else ""
+                  if (artCache.size > 200) artCache.clear()
+                  artCache[item.queueId] = s
+                  return s
+              }
+
+              private fun encodeArt(src: Bitmap, size: Int): String {
+                  return try {
+                      val side = minOf(src.width, src.height)
+                      if (side <= 0) return ""
+                      val square = Bitmap.createBitmap(src, (src.width - side) / 2, (src.height - side) / 2, side, side)
+                      val scaled = Bitmap.createScaledBitmap(square, size, size, true)
+                      val bos = ByteArrayOutputStream()
+                      scaled.compress(Bitmap.CompressFormat.JPEG, 72, bos)
+                      "data:image/jpeg;base64," + Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
+                  } catch (e: Exception) {
+                      ""
                   }
               }
 
