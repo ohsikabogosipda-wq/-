@@ -276,14 +276,15 @@ let playHistory = [];
 try { playHistory = JSON.parse(localStorage.getItem('pw_hist') || '[]'); } catch(e){}
 const norm = s => (s || '').toLowerCase().replace(/\s+/g, '');
 function saveHistory(){
+  playHistory.forEach((h, i) => { if (i >= 20 && h.art && h.art.startsWith('data:')) h.art = ''; });   // 큰 커버는 최근 곡만 보관
   try { localStorage.setItem('pw_hist', JSON.stringify(playHistory)); return; } catch(e){}
-  playHistory.forEach((h, i) => { if (i >= 12) h.art = ''; });          // 저장 공간이 모자라면 오래된 커버부터 뺀다
+  playHistory.forEach((h, i) => { if (i >= 8 && h.art && h.art.startsWith('data:')) h.art = ''; });
   try { localStorage.setItem('pw_hist', JSON.stringify(playHistory)); } catch(e){}
 }
 function pushHistory(title, artist, art){
   playHistory = playHistory.filter(h => norm(h.title) !== norm(title) || norm(h.artist) !== norm(artist));
   playHistory.unshift({title, artist: artist || '', art: art || ''});
-  if (playHistory.length > 40) playHistory.length = 40;
+  if (playHistory.length > 120) playHistory.length = 120;
   saveHistory();
 }
 function attachArt(title, artist, art){
@@ -664,6 +665,7 @@ window.pocketWalk = {
   update(o){
     sys.granted = !!o.granted; sys.active = !!o.active; sys.playing = !!o.playing;
     sys.pos = o.pos || 0; sys.dur = o.dur || 0; sys.at = performance.now();
+    if (!bootDone && sys.granted){ bootDone = true; setTimeout(expandArtists, 800); setTimeout(warmCovers, 3500); }
     const tk = (o.title || '') + '|' + (o.artist || '');
     if (tk !== sys.trackKey){ sys.trackKey = tk; sys.art = ''; }
     sys.title = o.title || ''; sys.artist = o.artist || '';
@@ -675,7 +677,9 @@ window.pocketWalk = {
       if (sys.granted && sys.active && sys.title){
         pushHistory(sys.title, sys.artist, sys.art);
         const t0 = sys.title, a0 = sys.artist;
-        setTimeout(() => { if (!sys.art && sys.title === t0) wantArt(t0, a0); }, 1500);   // 음악 앱이 커버를 안 주면 직접 찾는다
+        setTimeout(() => { if (!sys.art && sys.title === t0) wantArt(t0, a0, true); }, 700);   // 음악 앱이 커버를 안 주면 바로 찾는다
+        setTimeout(expandArtists, 1500);
+        setTimeout(warmCovers, 4000);
       }
     } else if (gotArt){                      // 커버가 곡 정보보다 조금 늦게 도착한 경우
       attachArt(sys.title, sys.artist, sys.art);
@@ -683,12 +687,13 @@ window.pocketWalk = {
       else if (hasTrack) setLabelArt(sys.art);
     }
   },
-  artFound(key, url){ artFound(key, url); },
+  artFound(key, url, status){ artFound(key, url, status); },
+  moreSongs(artist, list){ moreSongs(artist, list); },
   setQueue(o){ sys.queue = {active: String(o.active), items: o.items || []}; },
   back(){ if (drawer.state === 'open' || drawer.state === 'opening') closeDrawer(); },
   open(){ openDrawer(); },
   setSel(i){ drawer.sel = i; },
-  debug(){ return {state: drawer.state, sel: drawer.sel, items: drawer.items.map(x => x.title)}; }
+  debug(){ return {state: drawer.state, sel: drawer.sel, items: drawer.items.map(x => x.title), pool: pool.length, ready: artReady.size, inflight: artInflight}; }
 };
 
 /* ---------- 화면 유지 (화면이 꺼지지 않게) ---------- */
@@ -761,36 +766,153 @@ const cf = {
   empty1: $('cfEmpty1'), empty2: $('cfEmpty2'), cards: [], S: 200, opStr: ''
 };
 
-/* 앨범 커버를 미리 찾아 둔다: 곡 선택 전에도 커버가 보이도록, 지금 보이는 근처 곡부터 */
+/* 앨범 커버와 곡 목록을 미리 준비해 둔다: 앨범 화면을 열기 전에 이미 채워져 있도록 */
 const keyOf = (t, a) => norm(t) + '|' + norm(a);
-const artAsked = new Set();
-function wantArt(title, artist){
-  if (!NATIVE || !title) return;
-  const k = keyOf(title, artist);
-  if (artAsked.has(k)) return;
-  artAsked.add(k);
-  try { window.NativeHost.lookupArt(k, title, artist || ''); } catch(e){}
-}
-function wantArtNear(){
-  if (!NATIVE) return;
-  const lo = Math.max(0, drawer.sel - 5), hi = Math.min(drawer.items.length - 1, drawer.sel + 5);
-  for (let i = lo; i <= hi; i++){
-    const it = drawer.items[i];
-    if (it && !it.art) wantArt(it.title, it.artist);
+const artState = new Map();      // key -> 'q'(대기) | 'f'(요청 중) | 'ok' | 'none'
+const artQ = [];                 // 대기 중인 요청
+const artTimers = new Map();
+let artInflight = 0;
+const ART_PARALLEL = 4;
+let bootDone = false;
+
+function pumpArt(){
+  while (artInflight < ART_PARALLEL && artQ.length){
+    const j = artQ.shift();
+    artState.set(j.k, 'f'); artInflight++;
+    artTimers.set(j.k, setTimeout(() => endJob(j.k), 6500));        // 응답이 없으면 자리를 비운다
+    try { window.NativeHost.lookupArt(j.k, j.title, j.artist || ''); } catch(e){ endJob(j.k); }
   }
 }
-function artFound(key, url){
+function endJob(k){
+  if (artTimers.has(k)){ clearTimeout(artTimers.get(k)); artTimers.delete(k); artInflight = Math.max(0, artInflight - 1); }
+  if (artState.get(k) === 'f') artState.delete(k);
+  pumpArt();
+}
+function wantArt(title, artist, urgent){
+  if (!NATIVE || !title) return;
+  const k = keyOf(title, artist), st = artState.get(k);
+  if (st === 'ok' || st === 'none' || st === 'f') return;
+  if (st === 'q'){
+    if (urgent){ const i = artQ.findIndex(j => j.k === k); if (i > 0) artQ.unshift(artQ.splice(i, 1)[0]); }
+    return;
+  }
+  artState.set(k, 'q');
+  const job = {k, title, artist};
+  if (urgent) artQ.unshift(job); else artQ.push(job);
+  pumpArt();
+}
+
+/* 받아 둔 커버 이미지: 화면에 나오기 전에 미리 내려받고 풀어 둔다 */
+const artImgs = new Map();
+const artReady = new Set();
+const isReady = url => !url || url.startsWith('data:') || artReady.has(url);
+function preloadArt(url){
+  if (!url || url.startsWith('data:') || artReady.has(url) || artImgs.has(url)) return;
+  if (artImgs.size > 160) artImgs.delete(artImgs.keys().next().value);
+  const im = new Image();
+  im.decoding = 'async';
+  im.onload = () => { artReady.add(url); onArtLoaded(url); };
+  im.onerror = () => { artImgs.delete(url); };
+  im.src = url;
+  artImgs.set(url, im);
+}
+function onArtLoaded(url){
+  if (drawer.state === 'closed') return;
+  drawer.items.forEach((it, i) => { if (it.art === url && cf.cards[i]) cf.cards[i].painted = false; });
+  drawer.dirty = true;
+}
+
+/* 같은 가수의 다른 곡들로 목록을 넓힌다 (커버 주소도 함께 옴) */
+let pool = [];
+try { pool = JSON.parse(localStorage.getItem('pw_pool') || '[]'); } catch(e){}
+let artistsDone = [];
+try { artistsDone = JSON.parse(localStorage.getItem('pw_artists') || '[]'); } catch(e){}
+const POOL_MAX = 300;
+function savePool(){
+  try {
+    localStorage.setItem('pw_pool', JSON.stringify(pool));
+    localStorage.setItem('pw_artists', JSON.stringify(artistsDone));
+  } catch(e){
+    pool.length = Math.min(pool.length, 120);
+    try { localStorage.setItem('pw_pool', JSON.stringify(pool)); } catch(e2){}
+  }
+}
+function addPool(artist, list){
+  const have = new Set(playHistory.map(h => keyOf(h.title, h.artist)).concat(pool.map(p => keyOf(p.title, p.artist))));
+  (list || []).forEach(x => {
+    if (!x || !x.title) return;
+    const k = keyOf(x.title, x.artist);
+    if (x.art) artState.set(k, 'ok');
+    const h = playHistory.find(y => keyOf(y.title, y.artist) === k);
+    if (h){ if (!h.art && x.art) h.art = x.art; return; }        // 이미 들은 곡이면 커버만 채워 준다
+    if (have.has(k)) return;
+    have.add(k);
+    pool.push({title: x.title, artist: x.artist || artist, art: x.art || ''});
+  });
+  if (pool.length > POOL_MAX) pool.length = POOL_MAX;
+  savePool(); saveHistory();
+}
+function moreSongs(artist, list){
+  if (list === null){                                            // 통신 실패: 나중에 다시 시도
+    artistsDone = artistsDone.filter(x => x !== norm(artist));
+    savePool();
+    return;
+  }
+  addPool(artist, list);
+  warmCovers();
+}
+function expandArtists(){
+  if (!NATIVE) return;
+  const seen = new Set(); let n = 0;
+  for (const h of playHistory){
+    const a = (h.artist || '').trim();
+    if (!a) continue;
+    const k = norm(a);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (artistsDone.indexOf(k) >= 0) continue;
+    artistsDone.push(k); savePool();
+    try { window.NativeHost.expandArtist(a); } catch(e){}
+    if (++n >= 4) break;
+  }
+}
+function warmCovers(){                          // 앨범 화면을 열기 전에 앞쪽 곡들의 커버를 미리 받아 둔다
+  if (!NATIVE) return;
+  const items = buildItems();
+  let asks = 0;
+  for (let i = 0; i < Math.min(items.length, 40); i++){
+    const it = items[i];
+    if (it.art) preloadArt(it.art);
+    else if (asks < 12){ wantArt(it.title, it.artist); asks++; }
+  }
+}
+function wantArtNear(){                         // 지금 보고 있는 곡 근처부터 먼저 (가까운 곡이 맨 앞)
+  if (!NATIVE) return;
+  const n = drawer.items.length;
+  for (let d = 8; d >= 0; d--){
+    for (const i of [drawer.sel + d, drawer.sel - d]){
+      if (i < 0 || i >= n) continue;
+      const it = drawer.items[i];
+      if (it.art) preloadArt(it.art); else wantArt(it.title, it.artist, true);
+    }
+  }
+}
+function artFound(key, url, status){
+  endJob(key);
+  if (status === 'fail'){ artState.delete(key); return; }
+  if (!url){ artState.set(key, 'none'); return; }
+  artState.set(key, 'ok');
   let touched = false;
   const apply = it => { if (!it.art && keyOf(it.title, it.artist) === key){ it.art = url; touched = true; } };
-  playHistory.forEach(apply);
-  sys.queue.items.forEach(apply);
-  if (touched) saveHistory();
+  playHistory.forEach(apply); pool.forEach(apply); sys.queue.items.forEach(apply);
+  if (touched){ saveHistory(); savePool(); }
   drawer.items.forEach((it, i) => {
     if (!it.art && keyOf(it.title, it.artist) === key){
       it.art = url;
       if (cf.cards[i]) cf.cards[i].painted = false;
     }
   });
+  preloadArt(url);
   drawer.dirty = true;
   if (keyOf(sys.title, sys.artist) === key && !sys.art){       // 지금 듣는 곡의 카세트 라벨에도 붙인다
     sys.art = url;
@@ -802,7 +924,11 @@ function artFound(key, url){
 function buildItems(){
   if (NATIVE){
     if (sys.queue.items.length) return sys.queue.items.map(q => ({kind:'queue', id:q.id, title:q.title, artist:q.artist, art:q.art || ''}));
-    return playHistory.map(h => ({kind:'search', title:h.title, artist:h.artist, art:h.art || ''}));
+    const out = [], seen = new Set();                                   // 최근 들은 곡 먼저, 그다음 같은 가수의 다른 곡
+    const add = (t, a, art) => { const k = keyOf(t, a); if (seen.has(k)) return; seen.add(k); out.push({kind:'search', title:t, artist:a, art: art || ''}); };
+    playHistory.forEach(h => add(h.title, h.artist, h.art));
+    pool.forEach(x => add(x.title, x.artist, x.art));
+    return out;
   }
   return TAPES.map((t, i) => ({kind:'tape', idx:i, title:t.name, artist:t.sub, art:''}));
 }
@@ -818,10 +944,11 @@ function coverHue(s){ let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 
 function fillFace(f, it){
   f.className = 'face';
   f.textContent = '';
-  if (it.art){
+  if (it.art && isReady(it.art)){
     f.style.backgroundImage = 'url("' + it.art + '")';
     return;
   }
+  if (it.art) preloadArt(it.art);                                 // 아직 못 받았으면 받는 대로 다시 그린다
   const h = coverHue((it.title || '') + (it.artist || ''));       // 커버가 없으면 카세트 속지처럼 만든다
   f.className = 'face gen';
   f.style.background = 'linear-gradient(150deg, hsl(' + h + ' 34% 36%), hsl(' + ((h + 32) % 360) + ' 38% 16%))';
@@ -860,7 +987,7 @@ function openDrawer(){
     return {c, vis: false, painted: false, tr: '', z: '', op: ''};
   });
   cf.opStr = '';
-  cf.src.textContent = NATIVE ? (sys.queue.items.length ? '재생 대기열' : '최근 들은 곡') : '데모 테이프';
+  cf.src.textContent = NATIVE ? (sys.queue.items.length ? '재생 대기열' : '최근 들은 곡 · 추천') : '데모 테이프';
   cf.empty1.textContent = sys.granted || !NATIVE ? '표시할 곡이 아직 없어요' : '알림 접근 허용이 필요해요';
   cf.empty2.textContent = '음악 앱에서 곡을 재생하면 여기에 쌓여요';
   cf.empty1.parentNode.style.display = n ? 'none' : '';
