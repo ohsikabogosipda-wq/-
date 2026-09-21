@@ -222,7 +222,6 @@ jobs:
 
           import android.annotation.SuppressLint
           import android.app.Activity
-          import android.app.ActivityManager
           import android.content.Intent
           import android.os.Bundle
           import android.provider.Settings
@@ -235,20 +234,20 @@ jobs:
 
           /**
            * 워크맨 화면(assets/pocket-walk.html)을 보여주고,
-           * 지금 폰에서 나오는 음악을 조종한다.
-           *  - 앱을 열면 자동으로 "화면 고정"(앱 고정)을 요청한다
-           *  - 뒤로 가기로는 닫히지 않고, 화면의 "닫기" 버튼을 눌러야 닫힌다
+           * 지금 폰에서 나오는 음악(유튜브 뮤직 등)을 조종한다.
+           *  - 화면 고정 팝업은 띄우지 않는다
+           *  - 뒤로 가기로는 닫히지 않는다 (곡 서랍이 열려 있으면 서랍만 닫는다). 화면의 "닫기"를 눌러야 닫힌다
            *  - 화면 톡     : 재생 / 정지
-           *  - 볼륨 +      : 누르는 동안 뒤로 감기
-           *  - 볼륨 −      : 누르는 동안 앞으로 감기
-           *  - 옆으로 쓸기 : 다음 곡 / 이전 곡 (카세트를 갈아끼우는 효과)
-           *  - 카세트 길게 : 알림 접근 설정 열기(곡 정보 / 감기에 필요)
+           *  - 볼륨 +      : 누르는 동안 뒤로 감기 (곡 서랍에서는 위로 한 칸)
+           *  - 볼륨 −      : 누르는 동안 앞으로 감기 (곡 서랍에서는 아래로 한 칸)
+           *  - 좌우 쓸기   : 다음 곡 / 이전 곡 (카세트를 갈아끼우는 효과)
+           *  - 위로 쓸기   : 곡 서랍 열기, 고른 곡을 아래로 끌어 넣으면 재생
+           *  - 카세트 길게 : 알림 접근 설정 열기(곡 정보 / 감기 / 곡 목록에 필요)
            */
           class MainActivity : Activity() {
 
               private lateinit var web: WebView
               private lateinit var media: MediaBridge
-              private var lockRequested = false
               private val prefs by lazy { getSharedPreferences("pocketwalk", MODE_PRIVATE) }
 
               /** 웹 화면이 부르는 기능들 */
@@ -276,14 +275,25 @@ jobs:
                   @JavascriptInterface
                   fun prev() { runOnUiThread { media.previous() } }
 
-                  /** 카세트를 빼고 끼울 때 손에 오는 진동 */
+                  @JavascriptInterface
+                  fun playQueueItem(id: String) {
+                      val n = id.toLongOrNull() ?: return
+                      runOnUiThread { media.playQueueItem(n) }
+                  }
+
+                  @JavascriptInterface
+                  fun playSearch(query: String) { runOnUiThread { media.playSearch(query) } }
+
+                  /** 카세트를 빼고 끼울 때, 목록을 넘길 때 손에 오는 진동 */
                   @JavascriptInterface
                   fun haptic(kind: String) {
                       runOnUiThread {
-                          web.performHapticFeedback(
-                              if (kind == "insert") HapticFeedbackConstants.KEYBOARD_TAP
-                              else HapticFeedbackConstants.LONG_PRESS
-                          )
+                          val type = when (kind) {
+                              "insert" -> HapticFeedbackConstants.KEYBOARD_TAP
+                              "tick" -> HapticFeedbackConstants.CLOCK_TICK
+                              else -> HapticFeedbackConstants.LONG_PRESS
+                          }
+                          web.performHapticFeedback(type)
                       }
                   }
 
@@ -308,10 +318,17 @@ jobs:
                   web = WebView(this)
                   web.setBackgroundColor(0xFFE9EAEC.toInt())
                   web.settings.javaScriptEnabled = true
+                  web.settings.domStorageEnabled = true   // 최근 들은 곡 목록을 저장하는 데 쓴다
 
-                  media = MediaBridge(this) { json ->
-                      web.evaluateJavascript("window.pocketWalk && pocketWalk.update($json)", null)
-                  }
+                  media = MediaBridge(
+                      this,
+                      onState = { json ->
+                          web.evaluateJavascript("window.pocketWalk && pocketWalk.update($json)", null)
+                      },
+                      onQueue = { json ->
+                          web.evaluateJavascript("window.pocketWalk && pocketWalk.setQueue($json)", null)
+                      }
+                  )
                   web.addJavascriptInterface(NativeHost(), "NativeHost")
 
                   web.loadUrl("file:///android_asset/pocket-walk.html")
@@ -324,31 +341,12 @@ jobs:
                   else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
               }
 
-              /** 화면 고정(앱 고정) 요청. 처음에는 시스템이 확인 창을 띄운다 */
-              private fun requestPin() {
-                  try {
-                      val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
-                      if (am.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_NONE) startLockTask()
-                  } catch (e: Exception) {
-                  }
-              }
-
-              /** 닫기: 고정을 풀고 앱을 완전히 닫는다 */
+              /** 닫기: 앱을 완전히 닫는다 */
               private fun exitApp() {
-                  try {
-                      stopLockTask()
-                  } catch (e: Exception) {
-                  }
                   finishAndRemoveTask()
               }
 
-              /** 다른 앱(설정)을 열려면 고정을 잠깐 풀어야 한다. 돌아오면 다시 고정을 요청한다 */
               private fun openAccessSettings() {
-                  try {
-                      stopLockTask()
-                  } catch (e: Exception) {
-                  }
-                  lockRequested = false
                   try {
                       startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                   } catch (e: Exception) {
@@ -356,12 +354,13 @@ jobs:
                   }
               }
 
-              /** 뒤로 가기로는 닫히지 않는다. 화면의 닫기 버튼을 눌러야 한다 */
+              /** 뒤로 가기로는 앱이 닫히지 않는다. 곡 서랍이 열려 있으면 서랍만 닫는다 */
               @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
               override fun onBackPressed() {
+                  web.evaluateJavascript("window.pocketWalk && pocketWalk.back()", null)
               }
 
-              // ----- 물리 볼륨 키 -> 감기 (누르는 동안만) -----
+              // ----- 물리 볼륨 키 -> 감기 (누르는 동안만) / 곡 서랍에서는 목록 넘기기 -----
               private fun kindFor(keyCode: Int): String? = when (keyCode) {
                   KeyEvent.KEYCODE_VOLUME_UP -> "rew"
                   KeyEvent.KEYCODE_VOLUME_DOWN -> "ff"
@@ -388,10 +387,6 @@ jobs:
                   web.onResume()
                   media.start()
                   hideSystemUi()
-                  if (!lockRequested) {
-                      lockRequested = true
-                      requestPin()
-                  }
               }
 
               override fun onPause() {
@@ -443,13 +438,16 @@ jobs:
           import android.media.AudioManager
           import android.media.MediaMetadata
           import android.media.session.MediaController
+          import android.media.session.MediaSession
           import android.media.session.MediaSessionManager
           import android.media.session.PlaybackState
+          import android.os.Bundle
           import android.os.Handler
           import android.os.Looper
           import android.os.SystemClock
           import android.provider.Settings
           import android.view.KeyEvent
+          import org.json.JSONArray
           import org.json.JSONObject
 
           /**
@@ -462,7 +460,8 @@ jobs:
            */
           class MediaBridge(
               private val ctx: Context,
-              private val onState: (String) -> Unit
+              private val onState: (String) -> Unit,
+              private val onQueue: (String) -> Unit
           ) {
               private val handler = Handler(Looper.getMainLooper())
               private val msm = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
@@ -481,9 +480,11 @@ jobs:
               private var lastSent = -1L
               private var lastFallbackAt = 0L
               private var stepped = false      // 실제로 위치를 옮긴 적이 있는지
+              private var lastQueueJson = ""
 
               private val callback = object : MediaController.Callback() {
-                  override fun onPlaybackStateChanged(state: PlaybackState?) { push() }
+                  override fun onPlaybackStateChanged(state: PlaybackState?) { push(); pushQueue() }
+                  override fun onQueueChanged(queue: MutableList<MediaSession.QueueItem>?) { pushQueue() }
                   override fun onMetadataChanged(metadata: MediaMetadata?) { push() }
                   override fun onSessionDestroyed() { refresh() }
               }
@@ -562,6 +563,20 @@ jobs:
                   }
               }
 
+              /** 재생 대기열에서 고른 곡을 재생 (앱이 대기열을 공개할 때만 가능) */
+              fun playQueueItem(id: Long) {
+                  seekEndAt = 0L
+                  val c = controller ?: return
+                  c.transportControls.skipToQueueItem(id)
+              }
+
+              /** 곡 제목으로 검색해서 재생 (앱이 지원할 때만 가능) */
+              fun playSearch(query: String) {
+                  seekEndAt = 0L
+                  val c = controller ?: return
+                  c.transportControls.playFromSearch(query, Bundle())
+              }
+
               /** 다음 곡 */
               fun next() {
                   seekEndAt = 0L
@@ -628,6 +643,7 @@ jobs:
                       controller?.unregisterCallback(callback)
                       controller = null
                       push()
+                      pushQueue()
                       return
                   }
                   val list: List<MediaController> = try {
@@ -643,6 +659,7 @@ jobs:
                       controller?.registerCallback(callback, handler)
                   }
                   push()
+                  pushQueue()
               }
 
               private fun realPos(st: PlaybackState?): Long {
@@ -686,6 +703,33 @@ jobs:
                   onState(o.toString())
               }
 
+              /** 음악 앱이 공개한 재생 대기열을 웹 화면으로 보낸다 (바뀐 것만) */
+              private fun pushQueue() {
+                  val c = controller
+                  val arr = JSONArray()
+                  val q = c?.queue
+                  if (q != null) {
+                      for (item in q.take(MAX_QUEUE)) {
+                          val d = item.description
+                          val title = d.title?.toString() ?: ""
+                          if (title.isEmpty()) continue
+                          val o = JSONObject()
+                          o.put("id", item.queueId.toString())
+                          o.put("title", title)
+                          o.put("artist", d.subtitle?.toString() ?: "")
+                          arr.put(o)
+                      }
+                  }
+                  val root = JSONObject()
+                  root.put("active", (c?.playbackState?.activeQueueItemId ?: -1L).toString())
+                  root.put("items", arr)
+                  val json = root.toString()
+                  if (json != lastQueueJson) {
+                      lastQueueJson = json
+                      onQueue(json)
+                  }
+              }
+
               private fun sendKey(code: Int) {
                   val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                   am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
@@ -696,6 +740,7 @@ jobs:
                   private const val SEEK_SPEED = 12L            // 누른 시간 1초당 12초 움직임
                   private const val SEEK_INTERVAL_MS = 100L     // 위치를 갱신하는 간격
                   private const val FALLBACK_INTERVAL_MS = 500L
+                  private const val MAX_QUEUE = 80
 
                   /** "알림 접근"이 허용돼 있는지 */
                   fun hasAccess(ctx: Context): Boolean {
