@@ -65,6 +65,7 @@ html,body{
       <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#1a1c20" flood-opacity=".28"/>
     </filter>
     <clipPath id="doorClip"><rect x="28" y="28" width="496" height="344" rx="26"/></clipPath>
+    <clipPath id="listClip"><rect x="44" y="82" width="464" height="278"/></clipPath>
     <clipPath id="winClip"><rect x="60" y="96" width="200" height="64" rx="32"/></clipPath>
   </defs>
 
@@ -101,6 +102,17 @@ html,body{
         <circle cx="15" cy="181" r="3.4"/><circle cx="305" cy="181" r="3.4"/>
       </g>
     </g></g>
+    <g id="drawer" clip-path="url(#doorClip)" style="display:none">
+      <g id="drawerBody">
+        <rect x="28" y="28" width="496" height="344" rx="26" fill="#1c1f24"/>
+        <rect x="44" y="44" width="464" height="34" rx="12" fill="#2a2e35"/>
+        <text id="dhTitle" x="62" y="66" font-size="13" font-weight="600" fill="#f3eddf"></text>
+        <text id="dhHint" x="492" y="65.5" font-size="11" text-anchor="end" fill="#8d939a"></text>
+        <g id="dRows" clip-path="url(#listClip)"></g>
+        <text id="dEmpty1" x="276" y="212" font-size="15" text-anchor="middle" fill="#d8d3c6" style="display:none"></text>
+        <text id="dEmpty2" x="276" y="236" font-size="12" text-anchor="middle" fill="#8d939a" style="display:none"></text>
+      </g>
+    </g>
   </g>
 
   <!-- 오른쪽 정보 -->
@@ -161,7 +173,8 @@ const el = {
   title:$('title'), sub:$('sub'), modeText:$('modeText'), time:$('time'), total:$('total'),
   prog:$('prog'), lamp:$('lamp'), msg:$('msg'), file:$('file'), keep:$('keepBtn'), close:$('closeBtn'), closeTxt:$('closeTxt'),
   knob:$('knob'),
-  cassette:$('cassette'),
+  cassette:$('cassette'), drawer:$('drawer'), drawerBody:$('drawerBody'), dRows:$('dRows'),
+  dhTitle:$('dhTitle'), dhHint:$('dhHint'), dEmpty1:$('dEmpty1'), dEmpty2:$('dEmpty2'),
   k:[1,2,3,4,5].map(i => $('k' + i)), v:[1,2,3,4,5].map(i => $('v' + i))
 };
 
@@ -190,8 +203,8 @@ buildHub(el.hubR, CR.x, CR.y);
 
 // 안내 문구
 const legend = NATIVE
-  ? [['톡','재생 · 정지'], ['볼륨 +','뒤로 감기'], ['볼륨 −','앞으로 감기'], ['옆으로 쓸기','곡 바꾸기'], ['카세트 길게','음악 앱 연결']]
-  : [['톡','재생 · 정지'], ['왼쪽 끝','뒤로 감기'], ['오른쪽 끝','앞으로 감기'], ['옆으로 쓸기','곡 바꾸기'], ['카세트 길게','음악 넣기']];
+  ? [['톡','재생 · 정지'], ['볼륨 + / −','뒤로 · 앞으로 감기'], ['좌우 쓸기','곡 바꾸기'], ['위로 쓸기','곡 목록'], ['카세트 길게','음악 앱 연결']]
+  : [['톡','재생 · 정지'], ['양쪽 끝','뒤로 · 앞으로 감기'], ['좌우 쓸기','곡 바꾸기'], ['위로 쓸기','곡 목록'], ['카세트 길게','음악 넣기']];
 legend.forEach(([k, v], i) => { el.k[i].textContent = k; el.v[i].textContent = v; });
 
 /* ---------- 오디오 상태 ---------- */
@@ -221,10 +234,29 @@ let pendingLabel = null;    // 새 카세트에 붙일 라벨 {title, sub}
 let pendingDir = 0;
 let swapWasActive = false;
 
+const drawer = {state:'closed', t0:0, items:[], sel:0, scroll:0, drag:null, pull:0, rank0:0};
+let expectTitle = null, pickTimer = null;
+let playHistory = [];
+try { playHistory = JSON.parse(localStorage.getItem('pw_hist') || '[]'); } catch(e){}
+const norm = s => (s || '').toLowerCase().replace(/\s+/g, '');
+function pushHistory(title, artist){
+  playHistory = playHistory.filter(h => norm(h.title) !== norm(title) || norm(h.artist) !== norm(artist));
+  playHistory.unshift({title, artist: artist || ''});
+  if (playHistory.length > 40) playHistory.length = 40;
+  try { localStorage.setItem('pw_hist', JSON.stringify(playHistory)); } catch(e){}
+}
+
 function vibe(kind){
   if (NATIVE){ try { window.NativeHost.haptic(kind); } catch(e){} return; }
   if (!ctx) return;
-  if (kind === 'eject') clack(); else thunk();
+  if (kind === 'tick') tickSnd(); else if (kind === 'eject') clack(); else thunk();
+}
+function startInsert(label){                    // 곡 서랍에서 고른 카세트를 위에서 끼워 넣는다
+  if (swap) return false;
+  const now = performance.now();
+  swap = {phase:'wait', axis:'y', t0: now, dir: 1, thunked: false, hold: now + 200};
+  if (label) pendingLabel = label;
+  return true;
 }
 function startSwap(dir){
   if (swap) return false;
@@ -247,11 +279,11 @@ function stepSwap(now){
     return {dx: -d * SWAP_DIST * e, dy: 10 * e, rot: -d * 4 * e};
   }
   if (swap.phase === 'wait'){                     // 2) 새 카세트(라벨)를 기다린다
-    if (pendingLabel || t > (NATIVE ? SWAP_WAIT_MAX_MS : 10000)){   // 웹 미리보기는 새 테이프를 만드는 시간을 더 기다린다
+    if ((pendingLabel || t > (NATIVE ? SWAP_WAIT_MAX_MS : 10000)) && now >= (swap.hold || 0)){   // 웹 미리보기는 새 테이프를 만드는 시간을 더 기다린다
       if (pendingLabel){ setLabel(pendingLabel.title, pendingLabel.sub); pendingLabel = null; }
       swap.phase = 'in'; swap.t0 = now;
     }
-    return {dx: -d * SWAP_DIST, dy: 10, rot: -d * 4};
+    return swap.axis === 'y' ? {dx:0, dy:-400, rot:0} : {dx: -d * SWAP_DIST, dy: 10, rot: -d * 4};
   }
   const k = Math.min(1, t / SWAP_IN_MS);          // 3) 반대쪽에서 들어와 딱 끼워진다
   const off = 1 - easeOutBack(k);
@@ -261,11 +293,12 @@ function stepSwap(now){
     if (!NATIVE) apply();
     return {dx:0, dy:0, rot:0};
   }
+  if (swap.axis === 'y') return {dx:0, dy: -400 * off, rot: 3 * off};      // 위에서 내려와 찰칵
   return {dx: d * SWAP_DIST * off, dy: -14 * off, rot: d * 4 * off};
 }
 
 /* ---------- 앱 모드: 폰에서 지금 나오는 음악의 상태(안드로이드가 알려줌) ---------- */
-const sys = {granted:false, active:false, playing:false, pos:0, dur:0, at:0, key:''};
+const sys = {granted:false, active:false, playing:false, pos:0, dur:0, at:0, key:'', title:'', artist:'', queue:{active:'', items:[]}};
 let hasTrack = false;       // 카세트에 곡 라벨이 붙어 있는지
 function refreshLabel(o){
   if (!sys.granted){
@@ -279,10 +312,15 @@ function refreshLabel(o){
   } else {
     const label = {title: o.title || '재생 중인 음악', sub: (o.artist || '').slice(0, 26)};
     setNote('');
-    if (hasTrack){            // 곡이 바뀌었다 -> 카세트를 갈아끼운다
-      pendingLabel = label;
-      if (!swap) startSwap(pendingDir || 1);
-      pendingDir = 0;
+    if (hasTrack){            // 곡이 바뀌었다
+      if (expectTitle && norm(label.title) === norm(expectTitle)){   // 내가 고른 곡이 실제로 재생되기 시작함
+        expectTitle = null; clearTimeout(pickTimer);
+        if (swap) pendingLabel = label; else setLabel(label.title, label.sub);
+      } else {                // -> 카세트를 갈아끼운다
+        pendingLabel = label;
+        if (!swap) startSwap(pendingDir || 1);
+        pendingDir = 0;
+      }
     } else {
       setLabel(label.title, label.sub);
     }
@@ -318,6 +356,15 @@ function clack(){
   o.start(t); o.stop(t + 0.06);
 }
 
+function tickSnd(){
+  if (!ctx) return;
+  const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = 'square'; o.frequency.value = 1400;
+  g.gain.setValueAtTime(0.04, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.02);
+  o.connect(g); g.connect(ctx.destination);
+  o.start(t); o.stop(t + 0.03);
+}
 function thunk(){
   if (!ctx) return;
   const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
@@ -548,7 +595,11 @@ function releaseSeek(kind){
 
 /* ---------- 앱(안드로이드)에서 물리 볼륨 키가 호출하는 통로 ---------- */
 window.pocketWalk = {
-  press(kind){ if (kind === 'ff' || kind === 'rew') pressSeek(kind); },
+  press(kind){
+    if (kind !== 'ff' && kind !== 'rew') return;
+    if (drawer.state !== 'closed'){ drawerMove1(kind === 'rew' ? -1 : 1); return; }   // 서랍이 열려 있으면 볼륨 키로 목록을 넘긴다
+    pressSeek(kind);
+  },
   release(kind){ if (kind === 'ff' || kind === 'rew') releaseSeek(kind); },
   stop(){
     clearTimeout(releaseTimer);
@@ -560,9 +611,15 @@ window.pocketWalk = {
   update(o){
     sys.granted = !!o.granted; sys.active = !!o.active; sys.playing = !!o.playing;
     sys.pos = o.pos || 0; sys.dur = o.dur || 0; sys.at = performance.now();
+    sys.title = o.title || ''; sys.artist = o.artist || '';
     const key = [sys.granted, sys.active, o.title, o.artist].join('|');
-    if (key !== sys.key){ sys.key = key; refreshLabel(o); }
-  }
+    if (key !== sys.key){
+      sys.key = key; refreshLabel(o);
+      if (sys.granted && sys.active && sys.title) pushHistory(sys.title, sys.artist);
+    }
+  },
+  setQueue(o){ sys.queue = {active: String(o.active), items: o.items || []}; },
+  back(){ if (drawer.state === 'open' || drawer.state === 'opening') closeDrawer(); }
 };
 
 /* ---------- 화면 유지 (화면이 꺼지지 않게) ---------- */
@@ -620,6 +677,185 @@ function onClose(){
   window.NativeHost.closeApp();
 }
 
+/* ---------- 곡 서랍 (위로 쓸어 올리면 목록이 좌르륵) ---------- */
+const D = {CENTER_Y:220, ROW_H:46, POOL:9};
+const dRows = [];
+for (let i = 0; i < D.POOL; i++){
+  const g = svgEl(el.dRows, 'g', {display:'none'});
+  dRows.push({
+    g,
+    hl: svgEl(g, 'rect', {x:52, y:-21, width:448, height:42, rx:10, fill:'#e2612c', opacity:0}),
+    t: svgEl(g, 'text', {x:76, y:5, 'font-size':15, 'font-weight':500, fill:'#d8d3c6'}),
+    a: svgEl(g, 'text', {x:466, y:5, 'font-size':12, 'text-anchor':'end', fill:'#8d939a'}),
+    ar: svgEl(g, 'path', {d:'M478 -4 l6 8 l6 -8 z', fill:'#fff', opacity:0}),
+    tt:'', aa:''
+  });
+}
+const clipText = (s, n) => (s || '').length > n ? s.slice(0, n - 1) + '…' : (s || '');
+const easeOut = k => 1 - Math.pow(1 - k, 3);
+const svgRoot = $('dev');
+function toSvg(e){
+  const pt = svgRoot.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  const m = svgRoot.getScreenCTM();
+  return m ? pt.matrixTransform(m.inverse()) : {x: e.clientX, y: e.clientY};
+}
+
+function buildItems(){
+  if (NATIVE){
+    if (sys.queue.items.length) return sys.queue.items.map(q => ({kind:'queue', id:q.id, title:q.title, artist:q.artist}));
+    return playHistory.map(h => ({kind:'search', title:h.title, artist:h.artist}));
+  }
+  return TAPES.map((t, i) => ({kind:'tape', idx:i, title:t.name, artist:t.sub}));
+}
+function initialSel(items){
+  if (NATIVE && sys.queue.items.length){
+    const i = items.findIndex(x => String(x.id) === sys.queue.active);
+    return i >= 0 ? i : 0;
+  }
+  if (NATIVE) return Math.min(1, Math.max(0, items.length - 1));   // 맨 위는 지금 듣는 곡
+  return tapeIdx;
+}
+function openDrawer(){
+  if (drawer.state !== 'closed' || swap) return;
+  drawer.items = buildItems();
+  const n = drawer.items.length;
+  drawer.sel = initialSel(drawer.items);
+  drawer.scroll = drawer.sel; drawer.rank0 = drawer.sel; drawer.pull = 0; drawer.drag = null;
+  let title = '데모 테이프';
+  if (NATIVE) title = sys.queue.items.length ? '재생 대기열' : '최근 들은 곡';
+  el.dhTitle.textContent = title + ' · ' + n + '곡';
+  el.dhHint.textContent = n ? '고른 곡을 아래로 끌어 넣기' : '';
+  el.dEmpty1.textContent = sys.granted || !NATIVE ? '표시할 곡이 아직 없어요' : '알림 접근 허용이 필요해요';
+  el.dEmpty2.textContent = '음악 앱에서 곡을 재생하면 여기에 쌓여요';
+  el.dEmpty1.style.display = n ? 'none' : '';
+  el.dEmpty2.style.display = n ? 'none' : '';
+  el.drawer.style.display = '';
+  drawer.state = 'opening'; drawer.t0 = performance.now();
+  vibe('tick');
+}
+function closeDrawer(){
+  if (drawer.state === 'closed' || drawer.state === 'closing') return;
+  drawer.state = 'closing'; drawer.t0 = performance.now(); drawer.drag = null;
+}
+function drawerMove1(delta){
+  const n = drawer.items.length;
+  if (!n) return;
+  const s = clamp(drawer.sel + delta, 0, n - 1);
+  if (s !== drawer.sel){ drawer.sel = s; vibe('tick'); }
+}
+function drawerDown(e){                        // true면 서랍이 이 터치를 가져간다
+  const pt = toSvg(e);
+  if (pt.x < 28 || pt.x > 524 || pt.y < 28 || pt.y > 372) return false;
+  const d = {id: e.pointerId, y0: pt.y, moved: false, mode: 'scroll', startScroll: drawer.scroll, hit: -1};
+  if (pt.y < 82) d.mode = 'header';
+  else if (drawer.items.length){
+    d.hit = Math.round(drawer.scroll + (pt.y - D.CENTER_Y) / D.ROW_H);
+    if (d.hit === drawer.sel && Math.abs(drawer.scroll - drawer.sel) < 0.35 && Math.abs(pt.y - D.CENTER_Y) < D.ROW_H / 2 + 6) d.mode = 'pull';
+  }
+  drawer.drag = d;
+  return true;
+}
+function drawerMove(e){
+  const d = drawer.drag, pt = toSvg(e), dy = pt.y - d.y0;
+  if (Math.abs(dy) > 6) d.moved = true;
+  const n = drawer.items.length;
+  if (d.mode === 'scroll' && n){
+    drawer.scroll = clamp(d.startScroll - dy / D.ROW_H, 0, n - 1);
+    const s = Math.round(drawer.scroll);
+    if (s !== drawer.sel){ drawer.sel = s; vibe('tick'); }
+  } else if (d.mode === 'pull'){
+    drawer.pull = clamp(dy, 0, 150);
+  }
+}
+function drawerUp(){
+  const d = drawer.drag; drawer.drag = null;
+  if (!d) return;
+  if (d.mode === 'header'){ if (!d.moved) closeDrawer(); return; }
+  if (d.mode === 'pull'){
+    if (drawer.pull >= 70) commitInsert();      // 못 미치면 제자리로 돌아간다
+    return;
+  }
+  if (!d.moved && d.hit >= 0 && d.hit < drawer.items.length && d.hit !== drawer.sel){ drawer.sel = d.hit; vibe('tick'); }
+}
+function pickTimedOut(){
+  if (!expectTitle) return;
+  expectTitle = null;
+  flashNote('이 음악 앱은 곡 직접 고르기를 지원하지 않는 것 같아요');
+  setLabel(sys.title || '재생 중인 음악', (sys.artist || '').slice(0, 26));
+}
+async function webPickTape(idx){               // 웹 미리보기: 고른 데모 테이프를 끼운다
+  initCtx();
+  if (!startInsert()) return;
+  stopSource(); pos = 0;
+  tapeIdx = idx;
+  const t = TAPES[idx];
+  try {
+    if (!tapeBufs[idx]) tapeBufs[idx] = await buildDemo(t.bpm, t.seed);
+    installBuffer(tapeBufs[idx]);
+  } catch(e){}
+  pendingLabel = {title: t.name, sub: t.sub};
+}
+function commitInsert(){
+  const it = drawer.items[drawer.sel];
+  if (!it) return;
+  closeDrawer();
+  if (!NATIVE){ webPickTape(it.idx); return; }
+  const label = {title: it.title, sub: clipText(it.artist, 26)};
+  if (!startInsert(label)) return;
+  if (norm(it.title) !== norm(sys.title)){
+    expectTitle = it.title;
+    clearTimeout(pickTimer);
+    pickTimer = setTimeout(pickTimedOut, 4500);
+  }
+  try {
+    if (it.kind === 'queue') window.NativeHost.playQueueItem(String(it.id));
+    else window.NativeHost.playSearch((it.title + ' ' + (it.artist || '')).trim());
+  } catch(e){}
+}
+function renderDrawer(now, dt){
+  const n = drawer.items.length;
+  const el0 = now - drawer.t0;
+  let k = 1;
+  if (drawer.state === 'opening'){
+    k = Math.min(1, el0 / 240);
+    if (el0 > 240 + Math.min(n, 6) * 45 + 340) drawer.state = 'open';
+  } else if (drawer.state === 'closing'){
+    k = 1 - Math.min(1, el0 / 240);
+    if (el0 >= 240){ drawer.state = 'closed'; el.drawer.style.display = 'none'; return; }
+  }
+  const slide = drawer.state === 'closing' ? (1 - k) * 320 : (1 - easeOut(k)) * 70;
+  el.drawerBody.setAttribute('transform', `translate(0 ${slide.toFixed(1)})`);
+  el.drawerBody.setAttribute('opacity', (drawer.state === 'closing' ? Math.min(1, k * 2.5) : k).toFixed(2));
+
+  if (!drawer.drag || drawer.drag.mode !== 'scroll') drawer.scroll += (drawer.sel - drawer.scroll) * Math.min(1, dt * 14);
+  if (!drawer.drag || drawer.drag.mode !== 'pull') drawer.pull += (0 - drawer.pull) * Math.min(1, dt * 16);
+
+  const base = Math.round(drawer.scroll);
+  for (let s = 0; s < D.POOL; s++){
+    const r = dRows[s], idx = base - 4 + s;
+    if (idx < 0 || idx >= n){ r.g.setAttribute('display', 'none'); continue; }
+    const d = idx - drawer.scroll, ad = Math.abs(d);
+    const rank = Math.abs(idx - drawer.rank0);
+    const lp = drawer.state === 'closing' ? 1 : Math.max(0, Math.min(1, (el0 - 90 - rank * 45) / 320));   // 좌르륵: 가까운 줄부터 차례로
+    const e = easeOut(lp);
+    const isSel = idx === drawer.sel;
+    const y = D.CENTER_Y + d * D.ROW_H + (isSel ? drawer.pull : 0);
+    const hlv = Math.max(0, 1 - ad * 1.6);
+    r.g.removeAttribute('display');
+    r.g.setAttribute('transform', `translate(${((1 - e) * 130).toFixed(1)} ${y.toFixed(1)})`);
+    r.g.setAttribute('opacity', (Math.max(0.14, 1 - ad * 0.24) * e).toFixed(2));
+    r.hl.setAttribute('opacity', hlv.toFixed(2));
+    r.ar.setAttribute('opacity', (isSel ? hlv : 0).toFixed(2));
+    const it = drawer.items[idx];
+    const tt = clipText(it.title, 18), aa = clipText(it.artist, 11);
+    if (r.tt !== tt){ r.tt = tt; r.t.textContent = tt; }
+    if (r.aa !== aa){ r.aa = aa; r.a.textContent = aa; }
+    r.t.setAttribute('fill', ad < 0.5 ? '#ffffff' : '#d8d3c6');
+    r.a.setAttribute('fill', ad < 0.5 ? '#ffe2d2' : '#8d939a');
+  }
+}
+
 /* ---------- 곡 바꾸기 (옆으로 쓸기) ---------- */
 const SWIPE_PX = 60;
 async function webChangeTrack(dir){          // 웹 미리보기: 데모 테이프를 돌려 가며 끼운다
@@ -669,6 +905,7 @@ window.addEventListener('pointerdown', e => {
     close: !!(e.target.closest && e.target.closest('#closeBtn')),
     moved: false, seeking: false, fired: false, hold: null, long: null
   };
+  if (!p.keep && !p.close && drawer.state !== 'closed' && drawerDown(e)) return;   // 서랍이 열려 있으면 서랍이 터치를 가져간다
   if (p.keep || p.close){ press = p; return; }
   if (p.zone !== 'mid'){
     p.hold = setTimeout(() => { p.seeking = true; pressSeek(p.zone); }, HOLD_MS);
@@ -685,6 +922,7 @@ window.addEventListener('pointerdown', e => {
 });
 
 window.addEventListener('pointermove', e => {
+  if (drawer.drag && e.pointerId === drawer.drag.id){ drawerMove(e); return; }
   if (!press || e.pointerId !== press.id) return;
   if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > MOVE_PX){
     press.moved = true;
@@ -693,6 +931,7 @@ window.addEventListener('pointermove', e => {
 });
 
 function endPress(e){
+  if (drawer.drag && e.pointerId === drawer.drag.id){ drawerUp(); return; }
   if (!press || e.pointerId !== press.id) return;
   const p = press;
   press = null;
@@ -703,6 +942,7 @@ function endPress(e){
   else if (e.type === 'pointerup' && p.moved && !p.fired){
     const dx = e.clientX - p.x, dy = e.clientY - p.y;
     if (Math.abs(dx) >= SWIPE_PX && Math.abs(dx) > Math.abs(dy) * 1.5) changeTrack(dx < 0 ? 1 : -1);
+    else if (dy <= -SWIPE_PX && Math.abs(dy) > Math.abs(dx) * 1.5) openDrawer();      // 위로 쓸기 = 곡 서랍
   }
   else if (!p.fired && !p.moved && e.type === 'pointerup') togglePower();
 }
@@ -714,6 +954,13 @@ window.addEventListener('contextmenu', e => e.preventDefault());
 const keyMap = {ArrowUp:'ff', ArrowRight:'ff', ArrowDown:'rew', ArrowLeft:'rew'};
 window.addEventListener('keydown', e => {
   if (e.repeat) return;
+  if (drawer.state !== 'closed'){                       // 곡 서랍이 열려 있을 때
+    if (e.key === 'ArrowUp'){ e.preventDefault(); drawerMove1(-1); }
+    else if (e.key === 'ArrowDown'){ e.preventDefault(); drawerMove1(1); }
+    else if (e.key === 'Enter'){ e.preventDefault(); commitInsert(); }
+    else if (e.key === 'Escape'){ closeDrawer(); }
+    return;
+  }
   if (keyMap[e.key]){ e.preventDefault(); pressSeek(keyMap[e.key]); }
   else if (e.key === ' ' || e.key === 'Enter'){ e.preventDefault(); togglePower(); }
 });
@@ -775,6 +1022,7 @@ function tick(now){
 
   const sw = stepSwap(now);
   if (!swap && pendingLabel){ setLabel(pendingLabel.title, pendingLabel.sub); pendingLabel = null; }   // 늦게 도착한 라벨
+  if (drawer.state !== 'closed') renderDrawer(now, dt);
   const vmode = swap ? 'swap' : mode;
   if (sw) el.cassette.setAttribute('transform',
     `translate(${(42 + sw.dx).toFixed(1)} ${(57 + sw.dy).toFixed(1)}) scale(1.46) rotate(${sw.rot.toFixed(2)} 160 98)`);
