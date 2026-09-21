@@ -157,6 +157,9 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+              <!-- 앨범 커버가 없는 곡의 커버를 찾을 때만 쓴다 -->
+              <uses-permission android:name="android.permission.INTERNET" />
+
               <application
                   android:allowBackup="true"
                   android:icon="@drawable/ic_launcher"
@@ -231,6 +234,7 @@ jobs:
           import android.view.WindowManager
           import android.webkit.JavascriptInterface
           import android.webkit.WebView
+          import org.json.JSONObject
 
           /**
            * 워크맨 화면(assets/pocket-walk.html)을 보여주고,
@@ -248,6 +252,7 @@ jobs:
 
               private lateinit var web: WebView
               private lateinit var media: MediaBridge
+              private lateinit var artLookup: ArtLookup
               private val prefs by lazy { getSharedPreferences("pocketwalk", MODE_PRIVATE) }
 
               /** 웹 화면이 부르는 기능들 */
@@ -297,6 +302,12 @@ jobs:
                       }
                   }
 
+                  /** 앨범 커버가 없는 곡의 커버를 인터넷에서 찾는다 (곡 제목과 가수만 보낸다) */
+                  @JavascriptInterface
+                  fun lookupArt(key: String, title: String, artist: String) {
+                      artLookup.lookup(key, title, artist)
+                  }
+
                   @JavascriptInterface
                   fun closeApp() { runOnUiThread { exitApp() } }
 
@@ -329,6 +340,11 @@ jobs:
                           web.evaluateJavascript("window.pocketWalk && pocketWalk.setQueue($json)", null)
                       }
                   )
+                  artLookup = ArtLookup { key, url ->
+                      web.evaluateJavascript(
+                          "window.pocketWalk && pocketWalk.artFound(" + JSONObject.quote(key) + "," + JSONObject.quote(url) + ")", null
+                      )
+                  }
                   web.addJavascriptInterface(NativeHost(), "NativeHost")
 
                   web.loadUrl("file:///android_asset/pocket-walk.html")
@@ -811,6 +827,81 @@ jobs:
            * 이 서비스가 "알림 접근" 허용을 받으면 MediaBridge가 지금 재생 중인 음악을 조종할 수 있다.
            */
           class MediaListener : NotificationListenerService()
+          EOF
+          cat > app/src/main/java/com/example/pocketwalk/ArtLookup.kt <<'EOF'
+          package com.example.pocketwalk
+
+          import android.os.Handler
+          import android.os.Looper
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.net.URLEncoder
+          import java.util.concurrent.ConcurrentHashMap
+          import java.util.concurrent.Executors
+
+          /**
+           * 앨범 커버가 없는 곡의 커버를 인터넷(iTunes 검색)에서 찾아준다.
+           * 보내는 것은 곡 제목과 가수 이름뿐이고, 곡마다 한 번만 찾는다.
+           */
+          class ArtLookup(private val onFound: (String, String) -> Unit) {
+              private val io = Executors.newSingleThreadExecutor()
+              private val main = Handler(Looper.getMainLooper())
+              private val asked: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+              fun lookup(key: String, title: String, artist: String) {
+                  if (title.isBlank() || !asked.add(key)) return
+                  io.execute {
+                      val url = try {
+                          fetch(title, artist)
+                      } catch (e: Exception) {
+                          null
+                      }
+                      if (url == null) {
+                          asked.remove(key)            // 인터넷 문제면 나중에 다시 시도할 수 있게 둔다
+                      } else if (url.isNotEmpty()) {
+                          main.post { onFound(key, url) }
+                      }
+                  }
+              }
+
+              /** 커버 주소, 검색 결과가 없으면 "", 통신에 실패하면 null */
+              private fun fetch(title: String, artist: String): String? {
+                  val term = URLEncoder.encode((title + " " + artist).trim(), "UTF-8")
+                  var failed = false
+                  for (country in listOf("KR", "US")) {
+                      val conn = URL(
+                          "https://itunes.apple.com/search?term=" + term +
+                              "&media=music&entity=song&limit=5&country=" + country
+                      ).openConnection() as HttpURLConnection
+                      try {
+                          conn.connectTimeout = 6000
+                          conn.readTimeout = 6000
+                          if (conn.responseCode != 200) {
+                              failed = true
+                              continue
+                          }
+                          val body = conn.inputStream.bufferedReader().use { it.readText() }
+                          val arr = JSONObject(body).optJSONArray("results") ?: continue
+                          var first = ""
+                          for (i in 0 until arr.length()) {
+                              val r = arr.optJSONObject(i) ?: continue
+                              val u = r.optString("artworkUrl100", "")
+                              if (u.isEmpty()) continue
+                              if (first.isEmpty()) first = u
+                              val who = r.optString("artistName", "")
+                              if (artist.isNotBlank() && who.contains(artist, ignoreCase = true)) {
+                                  return u.replace("100x100bb", "300x300bb")
+                              }
+                          }
+                          if (first.isNotEmpty()) return first.replace("100x100bb", "300x300bb")
+                      } finally {
+                          conn.disconnect()
+                      }
+                  }
+                  return if (failed) null else ""
+              }
+          }
           EOF
           gradle assembleDebug --no-daemon --console=plain
 
