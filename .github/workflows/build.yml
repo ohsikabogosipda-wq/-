@@ -226,6 +226,7 @@ jobs:
           import android.content.Intent
           import android.os.Bundle
           import android.provider.Settings
+          import android.view.HapticFeedbackConstants
           import android.view.KeyEvent
           import android.view.View
           import android.view.WindowManager
@@ -240,6 +241,7 @@ jobs:
            *  - 화면 톡     : 재생 / 정지
            *  - 볼륨 +      : 누르는 동안 뒤로 감기
            *  - 볼륨 −      : 누르는 동안 앞으로 감기
+           *  - 옆으로 쓸기 : 다음 곡 / 이전 곡 (카세트를 갈아끼우는 효과)
            *  - 카세트 길게 : 알림 접근 설정 열기(곡 정보 / 감기에 필요)
            */
           class MainActivity : Activity() {
@@ -267,6 +269,23 @@ jobs:
 
                   @JavascriptInterface
                   fun openAccess() { runOnUiThread { openAccessSettings() } }
+
+                  @JavascriptInterface
+                  fun next() { runOnUiThread { media.next() } }
+
+                  @JavascriptInterface
+                  fun prev() { runOnUiThread { media.previous() } }
+
+                  /** 카세트를 빼고 끼울 때 손에 오는 진동 */
+                  @JavascriptInterface
+                  fun haptic(kind: String) {
+                      runOnUiThread {
+                          web.performHapticFeedback(
+                              if (kind == "insert") HapticFeedbackConstants.KEYBOARD_TAP
+                              else HapticFeedbackConstants.LONG_PRESS
+                          )
+                      }
+                  }
 
                   @JavascriptInterface
                   fun closeApp() { runOnUiThread { exitApp() } }
@@ -541,6 +560,20 @@ jobs:
                   } else {
                       c.transportControls.play()
                   }
+              }
+
+              /** 다음 곡 */
+              fun next() {
+                  seekEndAt = 0L
+                  val c = controller
+                  if (c != null) c.transportControls.skipToNext() else sendKey(KeyEvent.KEYCODE_MEDIA_NEXT)
+              }
+
+              /** 이전 곡 */
+              fun previous() {
+                  seekEndAt = 0L
+                  val c = controller
+                  if (c != null) c.transportControls.skipToPrevious() else sendKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
               }
 
               /** 누르기 시작 (dir: 1 앞으로, -1 뒤로). 누른 시간만큼 위치가 움직인다 */
