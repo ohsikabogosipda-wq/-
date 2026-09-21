@@ -46,7 +46,7 @@ html,body{
 #cf{
   position:fixed;inset:0;display:none;z-index:20;overflow:hidden;touch-action:none;
   background:radial-gradient(90% 75% at 50% 32%,#202024 0%,#08080a 68%,#000 100%);
-  color:#f3eddf;user-select:none;-webkit-user-select:none;
+  color:#f3eddf;user-select:none;-webkit-user-select:none;will-change:opacity;
   font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",system-ui,sans-serif;
 }
 #cfBar{
@@ -63,9 +63,10 @@ html,body{
 }
 .card{
   position:absolute;top:0;left:calc(50% - var(--S) / 2);width:var(--S);height:var(--S);
-  background:#111;will-change:transform;
-  -webkit-box-reflect:below 2px linear-gradient(to bottom,transparent 56%,rgba(255,255,255,.32));
+  background:#111;will-change:transform;backface-visibility:hidden;-webkit-backface-visibility:hidden;
 }
+.refl{position:absolute;left:0;top:100%;width:100%;height:100%;transform:scaleY(-1);opacity:.30;pointer-events:none;overflow:hidden}
+.refl::after{content:"";position:absolute;inset:0;background:linear-gradient(to bottom,#050506 0%,#050506 50%,rgba(5,5,6,0) 100%)}
 .face{width:100%;height:100%;background-size:cover;background-position:center;position:relative;box-sizing:border-box}
 .face.gen{display:flex;flex-direction:column;justify-content:flex-end;padding:9%}
 .face.gen::before{content:"";position:absolute;left:0;right:0;top:0;height:7%;background:#e2612c}
@@ -671,13 +672,18 @@ window.pocketWalk = {
     const key = [sys.granted, sys.active, o.title, o.artist].join('|');
     if (key !== sys.key){
       sys.key = key; refreshLabel(o);
-      if (sys.granted && sys.active && sys.title) pushHistory(sys.title, sys.artist, sys.art);
+      if (sys.granted && sys.active && sys.title){
+        pushHistory(sys.title, sys.artist, sys.art);
+        const t0 = sys.title, a0 = sys.artist;
+        setTimeout(() => { if (!sys.art && sys.title === t0) wantArt(t0, a0); }, 1500);   // 음악 앱이 커버를 안 주면 직접 찾는다
+      }
     } else if (gotArt){                      // 커버가 곡 정보보다 조금 늦게 도착한 경우
       attachArt(sys.title, sys.artist, sys.art);
       if (swap){ if (pendingLabel) pendingLabel.art = sys.art; }
       else if (hasTrack) setLabelArt(sys.art);
     }
   },
+  artFound(key, url){ artFound(key, url); },
   setQueue(o){ sys.queue = {active: String(o.active), items: o.items || []}; },
   back(){ if (drawer.state === 'open' || drawer.state === 'opening') closeDrawer(); },
   open(){ openDrawer(); },
@@ -752,8 +758,46 @@ function toSvg(e){
 }
 const cf = {
   el: $('cf'), stage: $('cfStage'), title: $('cfTitle'), artist: $('cfArtist'), src: $('cfSrc'), count: $('cfCount'),
-  empty1: $('cfEmpty1'), empty2: $('cfEmpty2'), cards: [], S: 200
+  empty1: $('cfEmpty1'), empty2: $('cfEmpty2'), cards: [], S: 200, opStr: ''
 };
+
+/* 앨범 커버를 미리 찾아 둔다: 곡 선택 전에도 커버가 보이도록, 지금 보이는 근처 곡부터 */
+const keyOf = (t, a) => norm(t) + '|' + norm(a);
+const artAsked = new Set();
+function wantArt(title, artist){
+  if (!NATIVE || !title) return;
+  const k = keyOf(title, artist);
+  if (artAsked.has(k)) return;
+  artAsked.add(k);
+  try { window.NativeHost.lookupArt(k, title, artist || ''); } catch(e){}
+}
+function wantArtNear(){
+  if (!NATIVE) return;
+  const lo = Math.max(0, drawer.sel - 5), hi = Math.min(drawer.items.length - 1, drawer.sel + 5);
+  for (let i = lo; i <= hi; i++){
+    const it = drawer.items[i];
+    if (it && !it.art) wantArt(it.title, it.artist);
+  }
+}
+function artFound(key, url){
+  let touched = false;
+  const apply = it => { if (!it.art && keyOf(it.title, it.artist) === key){ it.art = url; touched = true; } };
+  playHistory.forEach(apply);
+  sys.queue.items.forEach(apply);
+  if (touched) saveHistory();
+  drawer.items.forEach((it, i) => {
+    if (!it.art && keyOf(it.title, it.artist) === key){
+      it.art = url;
+      if (cf.cards[i]) cf.cards[i].painted = false;
+    }
+  });
+  drawer.dirty = true;
+  if (keyOf(sys.title, sys.artist) === key && !sys.art){       // 지금 듣는 곡의 카세트 라벨에도 붙인다
+    sys.art = url;
+    if (swap){ if (pendingLabel) pendingLabel.art = url; }
+    else if (hasTrack) setLabelArt(url);
+  }
+}
 
 function buildItems(){
   if (NATIVE){
@@ -771,38 +815,51 @@ function initialSel(items){
   return tapeIdx;
 }
 function coverHue(s){ let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h % 360; }
-function makeCard(it, i){
-  const c = document.createElement('div'); c.className = 'card'; c.dataset.i = i;
-  const f = document.createElement('div'); f.className = 'face';
+function fillFace(f, it){
+  f.className = 'face';
+  f.textContent = '';
   if (it.art){
     f.style.backgroundImage = 'url("' + it.art + '")';
-  } else {                                    // 커버가 없으면 카세트 속지처럼 만든다
-    const h = coverHue((it.title || '') + (it.artist || ''));
-    f.className = 'face gen';
-    f.style.background = 'linear-gradient(150deg, hsl(' + h + ' 34% 36%), hsl(' + ((h + 32) % 360) + ' 38% 16%))';
-    const b = document.createElement('b'); b.textContent = clipText(it.title, 22);
-    const s2 = document.createElement('i'); s2.textContent = clipText(it.artist, 24);
-    f.appendChild(b); f.appendChild(s2);
+    return;
   }
-  c.appendChild(f);
-  return c;
+  const h = coverHue((it.title || '') + (it.artist || ''));       // 커버가 없으면 카세트 속지처럼 만든다
+  f.className = 'face gen';
+  f.style.background = 'linear-gradient(150deg, hsl(' + h + ' 34% 36%), hsl(' + ((h + 32) % 360) + ' 38% 16%))';
+  const b = document.createElement('b'); b.textContent = clipText(it.title, 22);
+  const s2 = document.createElement('i'); s2.textContent = clipText(it.artist, 24);
+  f.appendChild(b); f.appendChild(s2);
+}
+function paintCard(o, it){                      // 카드는 화면에 처음 보일 때 그린다 (열 때 한꺼번에 그리지 않는다)
+  o.painted = true;
+  o.c.textContent = '';
+  const face = document.createElement('div'); fillFace(face, it);
+  const refl = document.createElement('div'); refl.className = 'refl';
+  const face2 = document.createElement('div'); fillFace(face2, it);
+  refl.appendChild(face2);
+  o.c.appendChild(face); o.c.appendChild(refl);
 }
 function syncCfInfo(){
   const n = drawer.items.length, it = drawer.items[drawer.sel];
   cf.title.textContent = it ? clipText(it.title, 40) : '';
   cf.artist.textContent = it ? clipText(it.artist, 40) : '';
   cf.count.textContent = n ? (drawer.sel + 1) + ' / ' + n : '';
+  wantArtNear();
 }
 function openDrawer(){
   if (drawer.state !== 'closed' || swap) return;
   drawer.items = buildItems();
   const n = drawer.items.length;
   drawer.sel = initialSel(drawer.items);
-  drawer.scroll = drawer.sel; drawer.pull = 0; drawer.drag = null; drawer.openK = 0;
+  drawer.scroll = drawer.sel; drawer.sv = 0; drawer.pull = 0; drawer.drag = null; drawer.openK = 0; drawer.dirty = true;
   cf.S = Math.max(120, Math.min(window.innerHeight * 0.5, window.innerWidth * 0.34));
   document.documentElement.style.setProperty('--S', cf.S + 'px');
   cf.stage.textContent = '';
-  cf.cards = drawer.items.map((it, i) => { const c = makeCard(it, i); cf.stage.appendChild(c); return {c, vis: true}; });
+  cf.cards = drawer.items.map((it, i) => {
+    const c = document.createElement('div'); c.className = 'card'; c.dataset.i = i; c.style.display = 'none';
+    cf.stage.appendChild(c);
+    return {c, vis: false, painted: false, tr: '', z: '', op: ''};
+  });
+  cf.opStr = '';
   cf.src.textContent = NATIVE ? (sys.queue.items.length ? '재생 대기열' : '최근 들은 곡') : '데모 테이프';
   cf.empty1.textContent = sys.granted || !NATIVE ? '표시할 곡이 아직 없어요' : '알림 접근 허용이 필요해요';
   cf.empty2.textContent = '음악 앱에서 곡을 재생하면 여기에 쌓여요';
@@ -857,13 +914,15 @@ function drawerUp(e){
     else if (dy <= -70) closeDrawer();                            // 위로 쓸면 닫힌다
     return;                                                       // 못 미치면 제자리로 돌아간다
   }
-  if (d.dir === 'h'){                                             // 손을 뗀 속도만큼 조금 더 굴러가서 멈춘다
+  if (d.dir === 'h'){                                             // 손을 뗀 속도 그대로 미끄러지듯 굴러가서 멈춘다
     const sm = d.samples; let v = 0;
     if (sm.length >= 2){
       const a = sm[0], b = sm[sm.length - 1], dt = (b.t - a.t) / 1000;
       if (dt > 0.01) v = -((b.x - a.x) / (cf.S * 0.42)) / dt;
     }
-    const target = clamp(Math.round(drawer.scroll + clamp(v, -12, 12) * 0.18), 0, drawer.items.length - 1);
+    v = clamp(v, -14, 14);
+    drawer.sv = v;
+    const target = clamp(Math.round(drawer.scroll + v * 0.22), 0, drawer.items.length - 1);
     if (target !== drawer.sel){ drawer.sel = target; vibe('tick'); syncCfInfo(); }
     return;
   }
@@ -923,25 +982,46 @@ function renderDrawer(now, dt){
       cf.stage.textContent = ''; cf.cards = []; return;
     }
   }
-  cf.el.style.opacity = fade.toFixed(2);
+  // 아무것도 움직이지 않으면 다시 그리지 않는다 (배터리와 부드러움을 위해)
+  if (drawer.state === 'open' && !drawer.drag && !drawer.dirty &&
+      Math.abs(drawer.sel - drawer.scroll) < 0.0005 && Math.abs(drawer.sv) < 0.005 && Math.abs(drawer.pull) < 0.05) return;
+  drawer.dirty = false;
+
+  const fs = fade.toFixed(2);
+  if (fs !== cf.opStr){ cf.opStr = fs; cf.el.style.opacity = fs; }
   const spread = drawer.state === 'opening' ? easeOut(drawer.openK) : 1;      // 가운데서 좌르륵 펼쳐진다
-  if (!drawer.drag || drawer.drag.dir !== 'h') drawer.scroll += (drawer.sel - drawer.scroll) * Math.min(1, dt * 12);
+
+  if (!drawer.drag || drawer.drag.dir !== 'h'){         // 스프링: 손을 뗀 속도 그대로 이어져서 자연스럽게 멈춘다
+    const K = 110, C = 2 * Math.sqrt(K) * 0.92;
+    let rem = dt;
+    while (rem > 0){
+      const h = Math.min(rem, 1 / 120);
+      drawer.sv += ((drawer.sel - drawer.scroll) * K - drawer.sv * C) * h;
+      drawer.scroll += drawer.sv * h;
+      rem -= h;
+    }
+    if (Math.abs(drawer.sel - drawer.scroll) < 0.0005 && Math.abs(drawer.sv) < 0.005){ drawer.scroll = drawer.sel; drawer.sv = 0; }
+  } else drawer.sv = 0;
   if (drawer.state !== 'inserting' && (!drawer.drag || drawer.drag.dir !== 'v')) drawer.pull += (0 - drawer.pull) * Math.min(1, dt * 14);
 
   for (let i = 0; i < cf.cards.length; i++){
     const o = cf.cards[i];
     const d = (i - drawer.scroll) * spread, ad = Math.abs(d);
-    if (ad > 6.2){ if (o.vis){ o.c.style.display = 'none'; o.vis = false; } continue; }
+    if (ad > 4.4){ if (o.vis){ o.c.style.display = 'none'; o.vis = false; } continue; }
     if (!o.vis){ o.c.style.display = ''; o.vis = true; }
+    if (!o.painted) paintCard(o, drawer.items[i]);
     const t = Math.min(ad, 1), sg = d < 0 ? -1 : 1;
     const x = sg * (S * 0.74 * t + S * 0.22 * Math.max(0, ad - 1));
     const z = -S * 0.5 * t - S * 0.02 * Math.max(0, ad - 1);
     const ry = -sg * 66 * t;
     let y = 0, sc = 1;
     if (i === drawer.sel){ y = drawer.pull; sc = 1 - Math.min(0.55, Math.max(0, drawer.pull) / (S * 2)); }
-    o.c.style.transform = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,' + z.toFixed(1) + 'px) rotateY(' + ry.toFixed(1) + 'deg) scale(' + sc.toFixed(3) + ')';
-    o.c.style.zIndex = String(1000 - Math.round(ad * 100));
-    o.c.style.opacity = ad > 5 ? String(Math.max(0, 6.2 - ad) / 1.2) : '1';
+    const tr = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,' + z.toFixed(1) + 'px) rotateY(' + ry.toFixed(1) + 'deg) scale(' + sc.toFixed(3) + ')';
+    if (o.tr !== tr){ o.tr = tr; o.c.style.transform = tr; }
+    const zi = String(1000 - Math.round(ad * 100));
+    if (o.z !== zi){ o.z = zi; o.c.style.zIndex = zi; }
+    const op = ad > 3.4 ? Math.max(0, 4.4 - ad).toFixed(2) : '1';
+    if (o.op !== op){ o.op = op; o.c.style.opacity = op; }
   }
 }
 
@@ -1112,6 +1192,7 @@ function tick(now){
   const sw = stepSwap(now);
   if (!swap && pendingLabel){ setLabel(pendingLabel.title, pendingLabel.sub, pendingLabel.art); pendingLabel = null; }   // 늦게 도착한 라벨
   if (drawer.state !== 'closed') renderDrawer(now, dt);
+  if (drawer.state === 'open'){ requestAnimationFrame(tick); return; }   // 앨범 화면이 덮고 있는 동안 뒤쪽 카세트는 그리지 않는다
   const vmode = swap ? 'swap' : mode;
   if (sw) el.cassette.setAttribute('transform',
     `translate(${(42 + sw.dx).toFixed(1)} ${(57 + sw.dy).toFixed(1)}) scale(1.46) rotate(${sw.rot.toFixed(2)} 160 98)`);
