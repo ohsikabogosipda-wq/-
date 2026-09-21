@@ -1,0 +1,696 @@
+name: APK 만들기
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: 안드로이드 프로젝트 만들고 빌드하기
+        run: |
+          set -e
+          test -f pocket-walk-landscape.html || { echo "pocket-walk-landscape.html 파일이 저장소 맨 위 폴더에 있어야 해요"; exit 1; }
+          P="$GITHUB_WORKSPACE/_app"
+          mkdir -p "$P/app/src/main/assets" "$P/app/src/main/java/com/example/pocketwalk" "$P/app/src/main/res/values" "$P/app/src/main/res/drawable"
+          cp pocket-walk-landscape.html "$P/app/src/main/assets/pocket-walk.html"
+          cd "$P"
+          base64 -d > app/pocketwalk.keystore <<'KEYSTORE'
+          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
+          E9l5rQrctcutXrHfLo0CAicQ
+          KEYSTORE
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "PocketWalk"
+          include(":app")
+          EOF
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.nonTransitiveRClass=true
+          EOF
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.example.pocketwalk"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.pocketwalk"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              // 매번 같은 키로 서명해서, 새 버전을 기존 앱 위에 그대로 설치할 수 있게 한다
+              signingConfigs {
+                  create("fixed") {
+                      storeFile = file("pocketwalk.keystore")
+                      storePassword = "pocketwalk"
+                      keyAlias = "pocketwalk"
+                      keyPassword = "pocketwalk"
+                  }
+              }
+
+              buildTypes {
+                  getByName("debug") {
+                      signingConfig = signingConfigs.getByName("fixed")
+                  }
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@drawable/ic_launcher"
+                  android:label="@string/app_name"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="sensorLandscape"
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <!-- "알림 접근" 허용을 받기 위한 서비스: 지금 재생 중인 음악을 조종하는 데 필요 -->
+                  <service
+                      android:name=".MediaListener"
+                      android:exported="true"
+                      android:label="@string/app_name"
+                      android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.service.notification.NotificationListenerService" />
+                      </intent-filter>
+                  </service>
+              </application>
+
+          </manifest>
+          EOF
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources>
+              <string name="app_name">포켓 워크</string>
+          </resources>
+          EOF
+          cat > app/src/main/res/values/themes.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:windowFullscreen">true</item>
+              </style>
+          </resources>
+          EOF
+          cat > app/src/main/res/drawable/ic_launcher.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="96dp"
+              android:height="96dp"
+              android:viewportWidth="96"
+              android:viewportHeight="96">
+              <path android:fillColor="#10202C" android:pathData="M0,0h96v96h-96z" />
+              <path android:fillColor="#B0BAC2" android:pathData="M12,22h72a8,8 0 0 1 8,8v36a8,8 0 0 1 -8,8h-72a8,8 0 0 1 -8,-8v-36a8,8 0 0 1 8,-8z" />
+              <path android:fillColor="#EE6A22" android:pathData="M12,22h72a8,8 0 0 1 8,8v4h-88v-4a8,8 0 0 1 8,-8z" />
+              <path android:fillColor="#15181D" android:pathData="M22,44h52v20h-52z" />
+              <path android:fillColor="#DDD9CD" android:pathData="M36,54m-8,0a8,8 0 1 0 16,0a8,8 0 1 0 -16,0" />
+              <path android:fillColor="#DDD9CD" android:pathData="M60,54m-8,0a8,8 0 1 0 16,0a8,8 0 1 0 -16,0" />
+              <path android:fillColor="#15181D" android:pathData="M36,54m-3,0a3,3 0 1 0 6,0a3,3 0 1 0 -6,0" />
+              <path android:fillColor="#15181D" android:pathData="M60,54m-3,0a3,3 0 1 0 6,0a3,3 0 1 0 -6,0" />
+          </vector>
+          EOF
+          cat > app/src/main/java/com/example/pocketwalk/MainActivity.kt <<'EOF'
+          package com.example.pocketwalk
+
+          import android.annotation.SuppressLint
+          import android.app.Activity
+          import android.app.ActivityManager
+          import android.content.Intent
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.KeyEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.webkit.JavascriptInterface
+          import android.webkit.WebView
+
+          /**
+           * 워크맨 화면(assets/pocket-walk.html)을 보여주고,
+           * 지금 폰에서 나오는 음악을 조종한다.
+           *  - 앱을 열면 자동으로 "화면 고정"(앱 고정)을 요청한다
+           *  - 뒤로 가기로는 닫히지 않고, 화면의 "닫기" 버튼을 눌러야 닫힌다
+           *  - 화면 톡     : 재생 / 정지
+           *  - 볼륨 +      : 누르는 동안 뒤로 감기
+           *  - 볼륨 −      : 누르는 동안 앞으로 감기
+           *  - 카세트 길게 : 알림 접근 설정 열기(곡 정보 / 감기에 필요)
+           */
+          class MainActivity : Activity() {
+
+              private lateinit var web: WebView
+              private lateinit var media: MediaBridge
+              private var lockRequested = false
+              private val prefs by lazy { getSharedPreferences("pocketwalk", MODE_PRIVATE) }
+
+              /** 웹 화면이 부르는 기능들 */
+              inner class NativeHost {
+                  @JavascriptInterface
+                  fun isNative(): Boolean = true
+
+                  @JavascriptInterface
+                  fun toggle() { runOnUiThread { media.toggle() } }
+
+                  @JavascriptInterface
+                  fun seekStart(kind: String) {
+                      runOnUiThread { media.startSeek(if (kind == "ff") 1 else -1) }
+                  }
+
+                  @JavascriptInterface
+                  fun seekStop() { runOnUiThread { media.stopSeek() } }
+
+                  @JavascriptInterface
+                  fun openAccess() { runOnUiThread { openAccessSettings() } }
+
+                  @JavascriptInterface
+                  fun closeApp() { runOnUiThread { exitApp() } }
+
+                  @JavascriptInterface
+                  fun getKeepScreenOn(): Boolean = prefs.getBoolean(KEY_KEEP_ON, true)
+
+                  @JavascriptInterface
+                  fun setKeepScreenOn(on: Boolean) {
+                      prefs.edit().putBoolean(KEY_KEEP_ON, on).apply()
+                      runOnUiThread { applyKeepOn(on) }
+                  }
+              }
+
+              @SuppressLint("SetJavaScriptEnabled")
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  applyKeepOn(prefs.getBoolean(KEY_KEEP_ON, true))
+
+                  web = WebView(this)
+                  web.setBackgroundColor(0xFFE9EAEC.toInt())
+                  web.settings.javaScriptEnabled = true
+
+                  media = MediaBridge(this) { json ->
+                      web.evaluateJavascript("window.pocketWalk && pocketWalk.update($json)", null)
+                  }
+                  web.addJavascriptInterface(NativeHost(), "NativeHost")
+
+                  web.loadUrl("file:///android_asset/pocket-walk.html")
+                  setContentView(web)
+                  hideSystemUi()
+              }
+
+              private fun applyKeepOn(on: Boolean) {
+                  if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+              }
+
+              /** 화면 고정(앱 고정) 요청. 처음에는 시스템이 확인 창을 띄운다 */
+              private fun requestPin() {
+                  try {
+                      val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+                      if (am.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_NONE) startLockTask()
+                  } catch (e: Exception) {
+                  }
+              }
+
+              /** 닫기: 고정을 풀고 앱을 완전히 닫는다 */
+              private fun exitApp() {
+                  try {
+                      stopLockTask()
+                  } catch (e: Exception) {
+                  }
+                  finishAndRemoveTask()
+              }
+
+              /** 다른 앱(설정)을 열려면 고정을 잠깐 풀어야 한다. 돌아오면 다시 고정을 요청한다 */
+              private fun openAccessSettings() {
+                  try {
+                      stopLockTask()
+                  } catch (e: Exception) {
+                  }
+                  lockRequested = false
+                  try {
+                      startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                  } catch (e: Exception) {
+                      startActivity(Intent(Settings.ACTION_SETTINGS))
+                  }
+              }
+
+              /** 뒤로 가기로는 닫히지 않는다. 화면의 닫기 버튼을 눌러야 한다 */
+              @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+              override fun onBackPressed() {
+              }
+
+              // ----- 물리 볼륨 키 -> 감기 (누르는 동안만) -----
+              private fun kindFor(keyCode: Int): String? = when (keyCode) {
+                  KeyEvent.KEYCODE_VOLUME_UP -> "rew"
+                  KeyEvent.KEYCODE_VOLUME_DOWN -> "ff"
+                  else -> null
+              }
+
+              override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+                  val kind = kindFor(keyCode) ?: return super.onKeyDown(keyCode, event)
+                  if ((event?.repeatCount ?: 0) == 0) {
+                      web.evaluateJavascript("window.pocketWalk && pocketWalk.press('$kind')", null)
+                  }
+                  return true // 시스템 볼륨 조절 창이 뜨지 않도록 키를 소비
+              }
+
+              override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+                  val kind = kindFor(keyCode) ?: return super.onKeyUp(keyCode, event)
+                  web.evaluateJavascript("window.pocketWalk && pocketWalk.release('$kind')", null)
+                  return true
+              }
+
+              // ----- 생명주기 (음악은 계속 나오게 두고, 화면 갱신만 멈춘다) -----
+              override fun onResume() {
+                  super.onResume()
+                  web.onResume()
+                  media.start()
+                  hideSystemUi()
+                  if (!lockRequested) {
+                      lockRequested = true
+                      requestPin()
+                  }
+              }
+
+              override fun onPause() {
+                  media.stop()
+                  web.onPause()
+                  super.onPause()
+              }
+
+              override fun onWindowFocusChanged(hasFocus: Boolean) {
+                  super.onWindowFocusChanged(hasFocus)
+                  if (hasFocus) {
+                      hideSystemUi()
+                  } else {
+                      // 키를 누른 채 다른 화면으로 넘어가도 감기가 남지 않게 한다
+                      media.stopSeek()
+                      web.evaluateJavascript(
+                          "window.pocketWalk && (pocketWalk.release('ff'), pocketWalk.release('rew'))", null
+                      )
+                  }
+              }
+
+              @Suppress("DEPRECATION")
+              private fun hideSystemUi() {
+                  window.decorView.systemUiVisibility = (
+                      View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                          or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                          or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                          or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                          or View.SYSTEM_UI_FLAG_FULLSCREEN
+                          or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                      )
+              }
+
+              override fun onDestroy() {
+                  web.destroy()
+                  super.onDestroy()
+              }
+
+              companion object {
+                  private const val KEY_KEEP_ON = "keepOn"
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/example/pocketwalk/MediaBridge.kt <<'EOF'
+          package com.example.pocketwalk
+
+          import android.content.ComponentName
+          import android.content.Context
+          import android.media.AudioManager
+          import android.media.MediaMetadata
+          import android.media.session.MediaController
+          import android.media.session.MediaSessionManager
+          import android.media.session.PlaybackState
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.SystemClock
+          import android.provider.Settings
+          import android.view.KeyEvent
+          import org.json.JSONObject
+
+          /**
+           * 지금 폰에서 나오고 있는 음악(스포티파이, 유튜브 뮤직 등)을 조종하고,
+           * 곡 정보와 재생 상태를 웹 화면(카세트)으로 보낸다.
+           *
+           * - 곡 정보 / 감기: "알림 접근" 허용이 필요
+           * - 재생 / 정지: 허용이 없어도 미디어 키로 동작
+           * - 감기: 버튼을 누른 시간에 비례해서 움직인다 (눌러서 뗄 때까지 시간 x 배속)
+           */
+          class MediaBridge(
+              private val ctx: Context,
+              private val onState: (String) -> Unit
+          ) {
+              private val handler = Handler(Looper.getMainLooper())
+              private val msm = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+              private val listener = ComponentName(ctx, MediaListener::class.java)
+
+              private var controller: MediaController? = null
+              private var running = false
+              private var tickCount = 0
+
+              // 감기 상태
+              private var seekDir = 0          // 1: 앞으로, -1: 뒤로, 0: 감기 아님
+              private var seekBase = 0L        // 누르기 시작한 순간의 재생 위치(ms)
+              private var seekStartAt = 0L     // 누르기 시작한 시각
+              private var seekPos = 0L         // 지금 가리키는 위치(ms)
+              private var seekEndAt = 0L
+              private var lastSent = -1L
+              private var lastFallbackAt = 0L
+              private var stepped = false      // 실제로 위치를 옮긴 적이 있는지
+
+              private val callback = object : MediaController.Callback() {
+                  override fun onPlaybackStateChanged(state: PlaybackState?) { push() }
+                  override fun onMetadataChanged(metadata: MediaMetadata?) { push() }
+                  override fun onSessionDestroyed() { refresh() }
+              }
+
+              private val sessionsListener =
+                  MediaSessionManager.OnActiveSessionsChangedListener { refresh() }
+
+              private val ticker = object : Runnable {
+                  override fun run() {
+                      if (!running) return
+                      tickCount++
+                      if (tickCount % 4 == 0) refresh() else push()
+                      handler.postDelayed(this, 500)
+                  }
+              }
+
+              private val seekStep = object : Runnable {
+                  override fun run() {
+                      val c = controller
+                      if (seekDir == 0 || c == null) return
+                      val now = SystemClock.elapsedRealtime()
+                      if (canSeek(c)) {
+                          seekPos = targetPos(c, now)
+                          if (seekPos != seekBase && seekPos != lastSent) {
+                              c.transportControls.seekTo(seekPos)
+                              lastSent = seekPos
+                              stepped = true
+                          }
+                      } else if (now - lastFallbackAt >= FALLBACK_INTERVAL_MS) {
+                          // 위치 이동을 지원하지 않는 앱: 앞/뒤로 감기 명령만 보낸다
+                          lastFallbackAt = now
+                          if (seekDir > 0) c.transportControls.fastForward() else c.transportControls.rewind()
+                      }
+                      push()
+                      handler.postDelayed(this, SEEK_INTERVAL_MS)
+                  }
+              }
+
+              fun start() {
+                  if (running) return
+                  running = true
+                  if (hasAccess(ctx)) {
+                      try {
+                          msm.addOnActiveSessionsChangedListener(sessionsListener, listener, handler)
+                      } catch (e: SecurityException) {
+                      }
+                  }
+                  refresh()
+                  handler.postDelayed(ticker, 500)
+              }
+
+              fun stop() {
+                  running = false
+                  handler.removeCallbacks(ticker)
+                  handler.removeCallbacks(seekStep)
+                  seekDir = 0
+                  try {
+                      msm.removeOnActiveSessionsChangedListener(sessionsListener)
+                  } catch (e: Exception) {
+                  }
+                  controller?.unregisterCallback(callback)
+                  controller = null
+              }
+
+              /** 재생 <-> 정지 */
+              fun toggle() {
+                  val c = controller
+                  if (c == null) {
+                      sendKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+                      return
+                  }
+                  if (c.playbackState?.state == PlaybackState.STATE_PLAYING) {
+                      c.transportControls.pause()
+                  } else {
+                      c.transportControls.play()
+                  }
+              }
+
+              /** 누르기 시작 (dir: 1 앞으로, -1 뒤로). 누른 시간만큼 위치가 움직인다 */
+              fun startSeek(dir: Int) {
+                  val c = controller ?: return
+                  handler.removeCallbacks(seekStep)
+                  seekDir = dir
+                  seekBase = realPos(c.playbackState)
+                  seekPos = seekBase
+                  seekStartAt = SystemClock.elapsedRealtime()
+                  lastSent = -1L
+                  stepped = false
+                  handler.postDelayed(seekStep, SEEK_INTERVAL_MS)
+              }
+
+              /** 뗀 순간: 누른 시간에 맞는 위치로 정확히 맞추고 끝낸다 */
+              fun stopSeek() {
+                  val c = controller
+                  if (seekDir != 0 && c != null && canSeek(c)) {
+                      val now = SystemClock.elapsedRealtime()
+                      val t = targetPos(c, now)
+                      if (t != seekBase || stepped) {
+                          seekPos = t
+                          if (t != lastSent) {
+                              c.transportControls.seekTo(t)
+                              lastSent = t
+                          }
+                          stepped = true
+                          seekEndAt = now
+                      }
+                  }
+                  seekDir = 0
+                  handler.removeCallbacks(seekStep)
+                  push()
+              }
+
+              // ---------------------------------------------------------------
+
+              private fun canSeek(c: MediaController): Boolean {
+                  val st = c.playbackState
+                  return st != null && (st.actions and PlaybackState.ACTION_SEEK_TO) != 0L
+              }
+
+              private fun targetPos(c: MediaController, now: Long): Long {
+                  val dur = c.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
+                  val max = if (dur > 1000L) dur - 500L else Long.MAX_VALUE
+                  return (seekBase + seekDir * SEEK_SPEED * (now - seekStartAt)).coerceIn(0L, max)
+              }
+
+              private fun refresh() {
+                  if (!hasAccess(ctx)) {
+                      controller?.unregisterCallback(callback)
+                      controller = null
+                      push()
+                      return
+                  }
+                  val list: List<MediaController> = try {
+                      msm.getActiveSessions(listener)
+                  } catch (e: SecurityException) {
+                      emptyList()
+                  }
+                  val pick = list.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+                      ?: list.firstOrNull()
+                  if (pick?.sessionToken != controller?.sessionToken) {
+                      controller?.unregisterCallback(callback)
+                      controller = pick
+                      controller?.registerCallback(callback, handler)
+                  }
+                  push()
+              }
+
+              private fun realPos(st: PlaybackState?): Long {
+                  if (st == null) return 0L
+                  val base = if (st.position == PlaybackState.PLAYBACK_POSITION_UNKNOWN) 0L else st.position
+                  val extra = if (st.state == PlaybackState.STATE_PLAYING) {
+                      ((SystemClock.elapsedRealtime() - st.lastPositionUpdateTime) * st.playbackSpeed).toLong()
+                  } else 0L
+                  return (base + extra).coerceAtLeast(0L)
+              }
+
+              /** 감기 직후 잠깐은 방금 옮긴 위치를 보여줘서 화면이 튀지 않게 한다 */
+              private fun displayPos(st: PlaybackState?): Long {
+                  val now = SystemClock.elapsedRealtime()
+                  if (seekDir != 0) return if (stepped) seekPos else realPos(st)
+                  if (seekEndAt != 0L && now - seekEndAt < 1200L) {
+                      val moving = st?.state == PlaybackState.STATE_PLAYING
+                      return seekPos + if (moving) now - seekEndAt else 0L
+                  }
+                  return realPos(st)
+              }
+
+              private fun push() {
+                  val c = controller
+                  val o = JSONObject()
+                  o.put("granted", hasAccess(ctx))
+                  o.put("active", c != null)
+                  if (c != null) {
+                      val st = c.playbackState
+                      val md = c.metadata
+                      o.put("playing", st?.state == PlaybackState.STATE_PLAYING)
+                      o.put("pos", displayPos(st))
+                      o.put("dur", md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L)
+                      o.put("title", md?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "")
+                      o.put(
+                          "artist",
+                          md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                              ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
+                      )
+                  }
+                  onState(o.toString())
+              }
+
+              private fun sendKey(code: Int) {
+                  val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+                  am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+              }
+
+              companion object {
+                  private const val SEEK_SPEED = 12L            // 누른 시간 1초당 12초 움직임
+                  private const val SEEK_INTERVAL_MS = 100L     // 위치를 갱신하는 간격
+                  private const val FALLBACK_INTERVAL_MS = 500L
+
+                  /** "알림 접근"이 허용돼 있는지 */
+                  fun hasAccess(ctx: Context): Boolean {
+                      val flat = Settings.Secure.getString(ctx.contentResolver, "enabled_notification_listeners")
+                          ?: return false
+                      return flat.split(":").any {
+                          ComponentName.unflattenFromString(it)?.packageName == ctx.packageName
+                      }
+                  }
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/example/pocketwalk/MediaListener.kt <<'EOF'
+          package com.example.pocketwalk
+
+          import android.service.notification.NotificationListenerService
+
+          /**
+           * 내용은 비어 있어도 된다.
+           * 이 서비스가 "알림 접근" 허용을 받으면 MediaBridge가 지금 재생 중인 음악을 조종할 수 있다.
+           */
+          class MediaListener : NotificationListenerService()
+          EOF
+          gradle assembleDebug --no-daemon --console=plain
+
+      - name: 릴리스에 APK 올리기
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: 포켓 워크 빌드 ${{ github.run_number }}
+          files: _app/app/build/outputs/apk/debug/app-debug.apk
