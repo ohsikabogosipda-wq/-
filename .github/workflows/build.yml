@@ -308,6 +308,12 @@ jobs:
                       artLookup.lookup(key, title, artist)
                   }
 
+                  /** 같은 가수의 다른 곡들(커버 포함)을 찾아 곡 목록을 넓힌다 */
+                  @JavascriptInterface
+                  fun expandArtist(artist: String) {
+                      artLookup.expand(artist)
+                  }
+
                   @JavascriptInterface
                   fun closeApp() { runOnUiThread { exitApp() } }
 
@@ -340,11 +346,19 @@ jobs:
                           web.evaluateJavascript("window.pocketWalk && pocketWalk.setQueue($json)", null)
                       }
                   )
-                  artLookup = ArtLookup { key, url ->
-                      web.evaluateJavascript(
-                          "window.pocketWalk && pocketWalk.artFound(" + JSONObject.quote(key) + "," + JSONObject.quote(url) + ")", null
-                      )
-                  }
+                  artLookup = ArtLookup(
+                      onArt = { key, url, status ->
+                          web.evaluateJavascript(
+                              "window.pocketWalk && pocketWalk.artFound(" + JSONObject.quote(key) + "," +
+                                  JSONObject.quote(url) + "," + JSONObject.quote(status) + ")", null
+                          )
+                      },
+                      onSongs = { artist, json ->
+                          web.evaluateJavascript(
+                              "window.pocketWalk && pocketWalk.moreSongs(" + JSONObject.quote(artist) + "," + json + ")", null
+                          )
+                      }
+                  )
                   web.addJavascriptInterface(NativeHost(), "NativeHost")
 
                   web.loadUrl("file:///android_asset/pocket-walk.html")
@@ -833,6 +847,7 @@ jobs:
 
           import android.os.Handler
           import android.os.Looper
+          import org.json.JSONArray
           import org.json.JSONObject
           import java.net.HttpURLConnection
           import java.net.URL
@@ -841,65 +856,132 @@ jobs:
           import java.util.concurrent.Executors
 
           /**
-           * 앨범 커버가 없는 곡의 커버를 인터넷(iTunes 검색)에서 찾아준다.
-           * 보내는 것은 곡 제목과 가수 이름뿐이고, 곡마다 한 번만 찾는다.
+           * 인터넷(iTunes 검색)으로
+           *  1) 앨범 커버가 없는 곡의 커버를 찾고,
+           *  2) 같은 가수의 다른 곡 목록(커버 포함)을 가져온다.
+           * 보내는 것은 곡 제목과 가수 이름뿐이다. 여러 개를 동시에 처리해서 빠르게 채운다.
            */
-          class ArtLookup(private val onFound: (String, String) -> Unit) {
-              private val io = Executors.newSingleThreadExecutor()
+          class ArtLookup(
+              private val onArt: (String, String, String) -> Unit,   // 키, 커버 주소, 상태(ok / none / fail)
+              private val onSongs: (String, String) -> Unit          // 가수, 곡 목록 JSON (실패하면 "null")
+          ) {
+              private val io = Executors.newFixedThreadPool(4)
               private val main = Handler(Looper.getMainLooper())
-              private val asked: MutableSet<String> = ConcurrentHashMap.newKeySet()
+              private val askedArt: MutableSet<String> = ConcurrentHashMap.newKeySet()
+              private val askedArtist: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
               fun lookup(key: String, title: String, artist: String) {
-                  if (title.isBlank() || !asked.add(key)) return
+                  if (title.isBlank()) {
+                      main.post { onArt(key, "", "none") }
+                      return
+                  }
+                  if (!askedArt.add(key)) {
+                      main.post { onArt(key, "", "fail") }
+                      return
+                  }
                   io.execute {
-                      val url = try {
-                          fetch(title, artist)
+                      var status = "fail"
+                      var url = ""
+                      try {
+                          val r = fetchArt(title, artist)
+                          if (r != null) {
+                              status = if (r.isEmpty()) "none" else "ok"
+                              url = r
+                          }
                       } catch (e: Exception) {
-                          null
                       }
-                      if (url == null) {
-                          asked.remove(key)            // 인터넷 문제면 나중에 다시 시도할 수 있게 둔다
-                      } else if (url.isNotEmpty()) {
-                          main.post { onFound(key, url) }
-                      }
+                      if (status == "fail") askedArt.remove(key)      // 통신 문제면 나중에 다시 시도할 수 있게 둔다
+                      main.post { onArt(key, url, status) }
                   }
               }
 
+              fun expand(artist: String) {
+                  if (artist.isBlank() || !askedArtist.add(artist)) return
+                  io.execute {
+                      val arr = try {
+                          fetchSongs(artist)
+                      } catch (e: Exception) {
+                          null
+                      }
+                      if (arr == null) askedArtist.remove(artist)
+                      main.post { onSongs(artist, arr?.toString() ?: "null") }
+                  }
+              }
+
+              private fun httpGet(address: String): String? {
+                  val conn = URL(address).openConnection() as HttpURLConnection
+                  return try {
+                      conn.connectTimeout = 4000
+                      conn.readTimeout = 5000
+                      if (conn.responseCode != 200) null
+                      else conn.inputStream.bufferedReader().use { it.readText() }
+                  } finally {
+                      conn.disconnect()
+                  }
+              }
+
+              private fun big(u: String) = u.replace("100x100bb", "300x300bb")
+
               /** 커버 주소, 검색 결과가 없으면 "", 통신에 실패하면 null */
-              private fun fetch(title: String, artist: String): String? {
+              private fun fetchArt(title: String, artist: String): String? {
                   val term = URLEncoder.encode((title + " " + artist).trim(), "UTF-8")
                   var failed = false
                   for (country in listOf("KR", "US")) {
-                      val conn = URL(
+                      val body = httpGet(
                           "https://itunes.apple.com/search?term=" + term +
                               "&media=music&entity=song&limit=5&country=" + country
-                      ).openConnection() as HttpURLConnection
-                      try {
-                          conn.connectTimeout = 6000
-                          conn.readTimeout = 6000
-                          if (conn.responseCode != 200) {
-                              failed = true
-                              continue
-                          }
-                          val body = conn.inputStream.bufferedReader().use { it.readText() }
-                          val arr = JSONObject(body).optJSONArray("results") ?: continue
-                          var first = ""
-                          for (i in 0 until arr.length()) {
-                              val r = arr.optJSONObject(i) ?: continue
-                              val u = r.optString("artworkUrl100", "")
-                              if (u.isEmpty()) continue
-                              if (first.isEmpty()) first = u
-                              val who = r.optString("artistName", "")
-                              if (artist.isNotBlank() && who.contains(artist, ignoreCase = true)) {
-                                  return u.replace("100x100bb", "300x300bb")
-                              }
-                          }
-                          if (first.isNotEmpty()) return first.replace("100x100bb", "300x300bb")
-                      } finally {
-                          conn.disconnect()
+                      )
+                      if (body == null) {
+                          failed = true
+                          continue
                       }
+                      val arr = JSONObject(body).optJSONArray("results") ?: continue
+                      var first = ""
+                      for (i in 0 until arr.length()) {
+                          val r = arr.optJSONObject(i) ?: continue
+                          val u = r.optString("artworkUrl100", "")
+                          if (u.isEmpty()) continue
+                          if (first.isEmpty()) first = u
+                          val who = r.optString("artistName", "")
+                          if (artist.isNotBlank() && who.contains(artist, ignoreCase = true)) return big(u)
+                      }
+                      if (first.isNotEmpty()) return big(first)
                   }
                   return if (failed) null else ""
+              }
+
+              /** 같은 가수의 곡들(제목, 가수, 커버). 없으면 빈 배열, 통신에 실패하면 null */
+              private fun fetchSongs(artist: String): JSONArray? {
+                  val term = URLEncoder.encode(artist, "UTF-8")
+                  var failed = false
+                  for (country in listOf("KR", "US")) {
+                      val body = httpGet(
+                          "https://itunes.apple.com/search?term=" + term +
+                              "&media=music&entity=song&attribute=artistTerm&limit=60&country=" + country
+                      )
+                      if (body == null) {
+                          failed = true
+                          continue
+                      }
+                      val res = JSONObject(body).optJSONArray("results") ?: continue
+                      val out = JSONArray()
+                      val seen = HashSet<String>()
+                      for (i in 0 until res.length()) {
+                          val r = res.optJSONObject(i) ?: continue
+                          val name = r.optString("trackName", "")
+                          val who = r.optString("artistName", "")
+                          if (name.isEmpty() || !seen.add(name.lowercase())) continue
+                          if (!who.contains(artist, ignoreCase = true) && !artist.contains(who, ignoreCase = true)) continue
+                          val o = JSONObject()
+                          o.put("title", name)
+                          o.put("artist", who)
+                          o.put("art", big(r.optString("artworkUrl100", "")))
+                          out.put(o)
+                          if (out.length() >= 40) break
+                      }
+                      if (out.length() > 0) return out
+                  }
+                  return if (failed) null else JSONArray()
               }
           }
           EOF
